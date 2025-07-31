@@ -636,13 +636,6 @@ body {
   border-left: 4px solid var(--error-color);
   color: var(--error-color);
 }
-
-.name-change-message {
-  background: rgba(245, 158, 11, 0.1) !important;
-  border-left: 4px solid var(--warning-color);
-  color: var(--warning-color);
-  font-weight: 500;
-}
 </style>
 
 <!--===================================================================================-->
@@ -667,8 +660,7 @@ body {
       <div id="name-form-content">
         <h1>🚀 Edge Chat</h1>
         <input id="name-input" placeholder="请输入你的昵称" maxlength="32">
-        <p>请选择一个唯一的昵称。如果昵称已被使用，系统会自动为你分配一个可用的昵称。<br>
-          这是一个运行在边缘计算节点上的聊天应用<br>
+        <p>这是一个运行在边缘计算节点上的聊天应用<br>
           基于 <a href="https://blog.cloudflare.com/introducing-workers-durable-objects" target="_blank">Cloudflare Workers Durable Objects</a> 构建</p>
       </div>
     </form>
@@ -893,7 +885,7 @@ function startChat() {
   roomname = roomname.replace(/[^a-zA-Z0-9_-]/g, "").replace(/_/g, "-").toLowerCase();
 
   if (roomname.length > 32 && !roomname.match(/^[0-9a-f]{64}$/)) {
-    addChatMessage(null, "房间名无效", false, "error");
+    addChatMessage("ERROR", "房间名无效", true);
     return;
   }
 
@@ -1014,12 +1006,7 @@ function join() {
     let data = JSON.parse(event.data);
 
     if (data.error) {
-      addChatMessage(null, "❌ 错误: " + data.error, false, "error");
-    } else if (data.nameChanged) {
-      // Handle nickname change notification
-      addChatMessage(null, `💡 ${data.nameChanged.message}`, false, "nameChange");
-      // Update the username variable to reflect the actual assigned name
-      username = data.nameChanged.assigned;
+      addChatMessage(null, "❌ 错误: " + data.error, true);
     } else if (data.joined) {
       let p = document.createElement("p");
       p.innerText = data.joined;
@@ -1046,8 +1033,6 @@ function join() {
           addChatMessage(null,
               "👋 欢迎来到 #" + roomname + " 房间，开始聊天吧！你可以点击上方的复制按钮分享房间链接。", true);
         }
-        addChatMessage(null,
-            "📝 提示: 为避免混淆，同一房间内不能使用相同的昵称。如果你的昵称已被使用，系统会自动为你分配一个唯一的昵称。", true);
       }
     } else {
       // A regular chat message.
@@ -1069,18 +1054,11 @@ function join() {
   });
 }
 
-function addChatMessage(name, text, isSystem = false, messageType = null) {
+function addChatMessage(name, text, isSystem = false) {
   let p = document.createElement("p");
   
   if (isSystem) {
     p.className = "system-message";
-  }
-  
-  // Apply specific message type styles
-  if (messageType === "nameChange") {
-    p.className = "name-change-message";
-  } else if (messageType === "error") {
-    p.className = "error-message";
   }
   
   if (name) {
