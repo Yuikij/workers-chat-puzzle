@@ -57,6 +57,11 @@ body {
   padding: 20px;
   background: var(--chat-background);
   overflow-wrap: break-word;
+  transition: top 0.3s ease;
+}
+
+#chatlog.with-room-info {
+  top: 80px;
 }
 
 #chatlog p {
@@ -442,6 +447,91 @@ body {
   border: 1px solid rgba(239, 68, 68, 0.2);
 }
 
+/* Room info bar */
+.room-info {
+  position: fixed;
+  top: 20px;
+  left: 20px;
+  right: 20px;
+  background: var(--background);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 12px 16px;
+  box-shadow: var(--shadow);
+  z-index: 100;
+  display: none;
+  align-items: center;
+  gap: 12px;
+}
+
+.room-info.visible {
+  display: flex;
+}
+
+.room-info-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.room-info h4 {
+  margin: 0 0 4px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-color);
+}
+
+.room-info p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-light);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.copy-button {
+  background: var(--primary-color);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.copy-button:hover {
+  background: var(--primary-hover);
+  transform: translateY(-1px);
+}
+
+.copy-button:active {
+  transform: scale(0.95);
+}
+
+.copy-button.success {
+  background: var(--success-color);
+}
+
+.close-room-info {
+  background: none;
+  border: none;
+  color: var(--text-light);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.close-room-info:hover {
+  background: var(--secondary-color);
+  color: var(--text-color);
+}
+
 /* Mobile optimizations */
 @media(max-width:768px) {
   #name-form-content,
@@ -463,8 +553,29 @@ body {
     bottom: 70px;
   }
   
+  #chatlog.with-room-info {
+    top: 70px;
+  }
+  
   .button-group {
     flex-direction: column;
+  }
+
+  .connection-status {
+    top: auto;
+    bottom: 80px;
+    right: 20px;
+    left: auto;
+  }
+
+  .room-info {
+    left: 10px;
+    right: 10px;
+    top: 10px;
+  }
+
+  .room-info p {
+    font-size: 11px;
   }
 }
 
@@ -481,6 +592,20 @@ body {
   
   #chat-input-container {
     padding: 12px 16px;
+  }
+
+  .room-info {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .room-info-content {
+    text-align: center;
+  }
+
+  .copy-button {
+    width: 100%;
   }
 }
 
@@ -520,6 +645,15 @@ body {
   <body>
     <div class="connection-status connecting" id="connection-status">
       <span class="loading"></span> 连接中...
+    </div>
+
+    <div class="room-info" id="room-info">
+      <div class="room-info-content">
+        <h4 id="room-title">房间信息</h4>
+        <p id="room-url">房间链接</p>
+      </div>
+      <button id="copy-room-button" class="copy-button">📋 复制链接</button>
+      <button class="close-room-info" onclick="hideRoomInfo()">✕</button>
     </div>
 
     <form id="name-form" action="/fake-form-action">
@@ -577,6 +711,10 @@ let chatInput = document.querySelector("#chat-input");
 let roster = document.querySelector("#roster");
 let connectionStatus = document.querySelector("#connection-status");
 let sendButton = document.querySelector("#send-button");
+let roomInfo = document.querySelector("#room-info");
+let roomTitle = document.querySelector("#room-title");
+let roomUrl = document.querySelector("#room-url");
+let copyRoomButton = document.querySelector("#copy-room-button");
 
 // Is the chatlog scrolled to the bottom?
 let isAtBottom = true;
@@ -594,6 +732,61 @@ if (hostname == "") {
 function updateConnectionStatus(status, message) {
   connectionStatus.className = `connection-status ${status}`;
   connectionStatus.innerHTML = message;
+}
+
+// Show room info
+function showRoomInfo() {
+  const currentUrl = window.location.href;
+  const isPrivateRoom = roomname.length === 64;
+  
+  roomTitle.textContent = isPrivateRoom ? "🔒 私人房间" : `💬 #${roomname}`;
+  roomUrl.textContent = currentUrl;
+  roomInfo.classList.add("visible");
+  chatlog.classList.add("with-room-info");
+}
+
+// Hide room info
+function hideRoomInfo() {
+  roomInfo.classList.remove("visible");
+  chatlog.classList.remove("with-room-info");
+}
+
+// Copy room URL to clipboard
+async function copyRoomUrl() {
+  try {
+    await navigator.clipboard.writeText(window.location.href);
+    
+    // Show success feedback
+    const originalText = copyRoomButton.innerHTML;
+    copyRoomButton.innerHTML = "✅ 已复制!";
+    copyRoomButton.classList.add("success");
+    
+    setTimeout(() => {
+      copyRoomButton.innerHTML = originalText;
+      copyRoomButton.classList.remove("success");
+    }, 2000);
+  } catch (err) {
+    // Fallback for older browsers
+    const textArea = document.createElement("textarea");
+    textArea.value = window.location.href;
+    document.body.appendChild(textArea);
+    textArea.select();
+    try {
+      document.execCommand('copy');
+      copyRoomButton.innerHTML = "✅ 已复制!";
+      copyRoomButton.classList.add("success");
+      setTimeout(() => {
+        copyRoomButton.innerHTML = "📋 复制链接";
+        copyRoomButton.classList.remove("success");
+      }, 2000);
+    } catch (err) {
+      copyRoomButton.innerHTML = "❌ 复制失败";
+      setTimeout(() => {
+        copyRoomButton.innerHTML = "📋 复制链接";
+      }, 2000);
+    }
+    document.body.removeChild(textArea);
+  }
 }
 
 function startNameChooser() {
@@ -697,6 +890,10 @@ function startChat() {
   }
 
   document.location.hash = "#" + roomname;
+
+  // Show room info and setup copy functionality
+  showRoomInfo();
+  copyRoomButton.addEventListener("click", copyRoomUrl);
 
   chatInput.addEventListener("keydown", event => {
     if (event.keyCode == 38) {
@@ -831,10 +1028,10 @@ function join() {
             "⚠️ 警告: 聊天室中的参与者是来自互联网的随机用户。用户名未经验证；任何人都可以冒充他人。聊天记录会被保存。", true);
         if (roomname.length == 64) {
           addChatMessage(null,
-              "🔒 这是一个私人房间。你可以通过分享URL邀请其他人加入。", true);
+              "🔒 这是一个私人房间。你可以通过点击上方的复制按钮分享房间链接邀请其他人加入。", true);
         } else {
           addChatMessage(null,
-              "👋 欢迎来到 #" + roomname + " 房间，开始聊天吧！", true);
+              "👋 欢迎来到 #" + roomname + " 房间，开始聊天吧！你可以点击上方的复制按钮分享房间链接。", true);
         }
       }
     } else {
