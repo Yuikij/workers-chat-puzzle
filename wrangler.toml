@@ -1,5 +1,5 @@
-name = "edge-chat-demo"
-compatibility_date = "2024-01-01"
+name = "edge-chat-puzzle"
+compatibility_date = "2025-07-31"
 
 main = "src/chat.mjs"
 
