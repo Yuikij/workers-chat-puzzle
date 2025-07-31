@@ -756,38 +756,6 @@ function hideRoomInfo() {
   chatlog.classList.remove("with-room-info");
 }
 
-// Roster management functions
-function addUserToRoster(username) {
-  // Check if user is already in the roster to prevent duplicates
-  const existingUsers = roster.querySelectorAll('p');
-  for (let userElement of existingUsers) {
-    if (userElement.innerText === username) {
-      return; // User already exists, don't add again
-    }
-  }
-  
-  // Add new user
-  let p = document.createElement("p");
-  p.innerText = username;
-  roster.appendChild(p);
-}
-
-function removeUserFromRoster(username) {
-  const existingUsers = roster.querySelectorAll('p');
-  for (let userElement of existingUsers) {
-    if (userElement.innerText === username) {
-      roster.removeChild(userElement);
-      break;
-    }
-  }
-}
-
-function clearRoster() {
-  const rosterHeader = roster.querySelector('h3');
-  roster.innerHTML = '';
-  roster.appendChild(rosterHeader);
-}
-
 // Copy room URL to clipboard
 async function copyRoomUrl() {
   try {
@@ -1018,7 +986,9 @@ function join() {
       updateConnectionStatus("disconnected", "❌ 连接断开");
 
       // Clear the roster.
-      clearRoster();
+      const rosterHeader = roster.querySelector('h3');
+      roster.innerHTML = '';
+      roster.appendChild(rosterHeader);
 
       // Don't try to reconnect too rapidly.
       let timeSinceLastJoin = Date.now() - startTime;
@@ -1036,11 +1006,6 @@ function join() {
   ws.addEventListener("open", event => {
     currentWebSocket = ws;
     updateConnectionStatus("connected", "✅ 已连接");
-    
-    // Clear the roster when establishing a new connection to prevent duplicates
-    // The server will send us a fresh list of all online users
-    clearRoster();
-    
     // Send user info message.
     ws.send(JSON.stringify({name: username}));
   });
@@ -1082,9 +1047,16 @@ function join() {
         return;
       }
     } else if (data.joined) {
-      addUserToRoster(data.joined);
+      let p = document.createElement("p");
+      p.innerText = data.joined;
+      roster.appendChild(p);
     } else if (data.quit) {
-      removeUserFromRoster(data.quit);
+      for (let child of roster.childNodes) {
+        if (child.innerText == data.quit) {
+          roster.removeChild(child);
+          break;
+        }
+      }
     } else if (data.ready) {
       // All pre-join messages have been delivered.
       if (!wroteWelcomeMessages) {
@@ -1164,7 +1136,9 @@ function resetAppState() {
   chatlog.appendChild(spacer);
   
   // Clear roster except header
-  clearRoster();
+  const rosterHeader = roster.querySelector('h3');
+  roster.innerHTML = '';
+  roster.appendChild(rosterHeader);
   
   // Reset inputs
   nameInput.style.borderColor = "";
