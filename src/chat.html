@@ -269,11 +269,6 @@ body {
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 
-#name-input.error {
-  border-color: var(--error-color);
-  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1);
-}
-
 #name-form p {
   color: var(--text-light);
   font-size: 14px;
@@ -641,6 +636,13 @@ body {
   border-left: 4px solid var(--error-color);
   color: var(--error-color);
 }
+
+.name-change-message {
+  background: rgba(245, 158, 11, 0.1) !important;
+  border-left: 4px solid var(--warning-color);
+  color: var(--warning-color);
+  font-weight: 500;
+}
 </style>
 
 <!--===================================================================================-->
@@ -665,7 +667,8 @@ body {
       <div id="name-form-content">
         <h1>🚀 Edge Chat</h1>
         <input id="name-input" placeholder="请输入你的昵称" maxlength="32">
-        <p>这是一个运行在边缘计算节点上的聊天应用<br>
+        <p>请选择一个唯一的昵称。如果昵称已被使用，系统会自动为你分配一个可用的昵称。<br>
+          这是一个运行在边缘计算节点上的聊天应用<br>
           基于 <a href="https://blog.cloudflare.com/introducing-workers-durable-objects" target="_blank">Cloudflare Workers Durable Objects</a> 构建</p>
       </div>
     </form>
@@ -820,7 +823,6 @@ function startNameChooser() {
 
 function startRoomChooser() {
   nameForm.style.display = "none";
-  roomForm.style.display = "flex";
 
   if (document.location.hash.length > 1) {
     roomname = document.location.hash.slice(1);
@@ -884,16 +886,14 @@ function startRoomChooser() {
 }
 
 function startChat() {
-  nameForm.style.display = "none";
   roomForm.style.display = "none";
-  chatroom.style.display = "block";
   updateConnectionStatus("connecting", '<span class="loading"></span> 连接中...');
 
   // Normalize the room name a bit.
   roomname = roomname.replace(/[^a-zA-Z0-9_-]/g, "").replace(/_/g, "-").toLowerCase();
 
   if (roomname.length > 32 && !roomname.match(/^[0-9a-f]{64}$/)) {
-    addChatMessage("ERROR", "房间名无效", true);
+    addChatMessage(null, "房间名无效", false, "error");
     return;
   }
 
@@ -1014,38 +1014,12 @@ function join() {
     let data = JSON.parse(event.data);
 
     if (data.error) {
-      addChatMessage(null, "❌ 错误: " + data.error, true);
-      
-      // If it's a name-related error and we haven't shown the ready message yet,
-      // it means the name was rejected, so go back to name selection
-      if (!wroteWelcomeMessages && (data.error.includes("用户名") || data.error.includes("Name"))) {
-        // Close the current WebSocket
-        if (currentWebSocket) {
-          currentWebSocket.close();
-          currentWebSocket = null;
-        }
-        
-        // Go back to name chooser
-        updateConnectionStatus("disconnected", "❌ 用户名冲突");
-        roomForm.style.display = "none";
-        nameForm.style.display = "flex";
-        hideRoomInfo();
-        
-        // Show error message and focus on name input
-        nameInput.style.borderColor = "var(--error-color)";
-        nameInput.placeholder = "该用户名已被使用，请重新输入";
-        nameInput.value = "";
-        nameInput.focus();
-        
-        // Reset border color when user starts typing
-        nameInput.addEventListener("input", function resetBorder() {
-          nameInput.style.borderColor = "";
-          nameInput.placeholder = "请输入你的昵称";
-          nameInput.removeEventListener("input", resetBorder);
-        }, { once: true });
-        
-        return;
-      }
+      addChatMessage(null, "❌ 错误: " + data.error, false, "error");
+    } else if (data.nameChanged) {
+      // Handle nickname change notification
+      addChatMessage(null, `💡 ${data.nameChanged.message}`, false, "nameChange");
+      // Update the username variable to reflect the actual assigned name
+      username = data.nameChanged.assigned;
     } else if (data.joined) {
       let p = document.createElement("p");
       p.innerText = data.joined;
@@ -1072,6 +1046,8 @@ function join() {
           addChatMessage(null,
               "👋 欢迎来到 #" + roomname + " 房间，开始聊天吧！你可以点击上方的复制按钮分享房间链接。", true);
         }
+        addChatMessage(null,
+            "📝 提示: 为避免混淆，同一房间内不能使用相同的昵称。如果你的昵称已被使用，系统会自动为你分配一个唯一的昵称。", true);
       }
     } else {
       // A regular chat message.
@@ -1093,11 +1069,18 @@ function join() {
   });
 }
 
-function addChatMessage(name, text, isSystem = false) {
+function addChatMessage(name, text, isSystem = false, messageType = null) {
   let p = document.createElement("p");
   
   if (isSystem) {
     p.className = "system-message";
+  }
+  
+  // Apply specific message type styles
+  if (messageType === "nameChange") {
+    p.className = "name-change-message";
+  } else if (messageType === "error") {
+    p.className = "error-message";
   }
   
   if (name) {
@@ -1117,40 +1100,8 @@ function addChatMessage(name, text, isSystem = false) {
   }
 }
 
-// Reset app state
-function resetAppState() {
-  // Clear any existing state
-  currentWebSocket = null;
-  wroteWelcomeMessages = false;
-  lastSeenTimestamp = 0;
-  
-  // Hide all forms except name form
-  nameForm.style.display = "flex";
-  roomForm.style.display = "none";
-  chatroom.style.display = "none";
-  hideRoomInfo();
-  
-  // Clear chat log except spacer
-  const spacer = chatlog.querySelector('#spacer');
-  chatlog.innerHTML = '';
-  chatlog.appendChild(spacer);
-  
-  // Clear roster except header
-  const rosterHeader = roster.querySelector('h3');
-  roster.innerHTML = '';
-  roster.appendChild(rosterHeader);
-  
-  // Reset inputs
-  nameInput.style.borderColor = "";
-  nameInput.placeholder = "请输入你的昵称";
-  nameInput.value = "";
-  roomNameInput.value = "";
-  chatInput.value = "";
-}
-
 // Initialize the app
 updateConnectionStatus("connecting", '<span class="loading"></span> 初始化中...');
-resetAppState();
 startNameChooser();
 </script>
 <!--===================================================================================-->

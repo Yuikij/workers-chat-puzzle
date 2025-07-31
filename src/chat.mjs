@@ -219,6 +219,10 @@ export class ChatRoom {
 
     // We will track metadata for each client WebSocket object in `sessions`.
     this.sessions = new Map();
+    
+    // Keep track of names that need to be made unique after hibernation recovery
+    let namesToCheck = new Map();
+    
     this.state.getWebSockets().forEach((webSocket) => {
       // The constructor may have been called when waking up from hibernation,
       // so get previously serialized metadata for any existing WebSockets.
@@ -236,14 +240,81 @@ export class ChatRoom {
       // message. Until then, we will queue messages in `session.blockedMessages`.
       // This could have been arbitrarily large, so we won't put it in the attachment.
       let blockedMessages = [];
+      
+      // If this session has a name, we need to check for uniqueness after all sessions are restored
+      if (meta.name) {
+        namesToCheck.set(webSocket, meta.name);
+      }
+      
       this.sessions.set(webSocket, { ...meta, limiter, blockedMessages });
     });
+
+    // After all sessions are restored, check for duplicate names and resolve conflicts
+    this.resolveDuplicateNames(namesToCheck);
 
     // We keep track of the last-seen message's timestamp just so that we can assign monotonically
     // increasing timestamps even if multiple messages arrive simultaneously (see below). There's
     // no need to store this to disk since we assume if the object is destroyed and recreated, much
     // more than a millisecond will have gone by.
     this.lastTimestamp = 0;
+  }
+
+  // Resolve duplicate names that might exist after hibernation recovery
+  resolveDuplicateNames(namesToCheck) {
+    let nameCount = new Map();
+    let sessionsToUpdate = [];
+
+    // Count occurrences of each name
+    for (let [webSocket, name] of namesToCheck) {
+      let lowerName = name.toLowerCase();
+      nameCount.set(lowerName, (nameCount.get(lowerName) || 0) + 1);
+    }
+
+    // Find sessions that need name updates
+    for (let [webSocket, originalName] of namesToCheck) {
+      let lowerName = originalName.toLowerCase();
+      if (nameCount.get(lowerName) > 1) {
+        // This name appears multiple times, we need to make it unique
+        let session = this.sessions.get(webSocket);
+        let uniqueName = this.generateUniqueName(originalName);
+        session.name = uniqueName;
+        
+        // Update the WebSocket attachment
+        webSocket.serializeAttachment({ 
+          ...webSocket.deserializeAttachment(), 
+          name: uniqueName 
+        });
+
+        sessionsToUpdate.push({
+          webSocket,
+          originalName,
+          uniqueName
+        });
+
+        // Update the name count to reflect the new unique name
+        nameCount.set(lowerName, nameCount.get(lowerName) - 1);
+        nameCount.set(uniqueName.toLowerCase(), 1);
+      }
+    }
+
+    // Notify affected clients about name changes
+    sessionsToUpdate.forEach(({webSocket, originalName, uniqueName}) => {
+      try {
+        webSocket.send(JSON.stringify({
+          nameChanged: {
+            requested: originalName,
+            assigned: uniqueName,
+            message: `连接恢复后检测到昵称冲突，"${originalName}" 已更改为 "${uniqueName}"`
+          }
+        }));
+      } catch (err) {
+        // WebSocket might be in a bad state, mark for cleanup
+        let session = this.sessions.get(webSocket);
+        if (session) {
+          session.quit = true;
+        }
+      }
+    });
   }
 
   // The system will call fetch() whenever an HTTP request is sent to this Object. Such requests
@@ -347,37 +418,33 @@ export class ChatRoom {
       if (!session.name) {
         // The first message the client sends is the user info message with their name. Save it
         // into their session object.
-        let proposedName = "" + (data.name || "anonymous");
+        let requestedName = "" + (data.name || "anonymous");
         
         // Don't let people use ridiculously long names. (This is also enforced on the client,
         // so if they get here they are not using the intended client.)
-        if (proposedName.length > 32) {
+        if (requestedName.length > 32) {
           webSocket.send(JSON.stringify({error: "Name too long."}));
           webSocket.close(1009, "Name too long.");
           return;
         }
 
-        // Check if the name is already taken in this room
-        let nameExists = false;
-        for (let existingSession of this.sessions.values()) {
-          if (existingSession.name && existingSession.name.toLowerCase() === proposedName.toLowerCase()) {
-            nameExists = true;
-            break;
-          }
-        }
-
-        if (nameExists) {
-          webSocket.send(JSON.stringify({
-            error: `用户名 "${proposedName}" 已被使用，请选择其他用户名。`
-          }));
-          webSocket.close(1008, "Name already taken.");
-          return;
-        }
-
-        // Name is available, set it
-        session.name = proposedName;
+        // Check for nickname uniqueness and generate a unique name if needed
+        let uniqueName = this.generateUniqueName(requestedName);
+        session.name = uniqueName;
+        
         // attach name to the webSocket so it survives hibernation
         webSocket.serializeAttachment({ ...webSocket.deserializeAttachment(), name: session.name });
+
+        // If the name was changed, notify the user
+        if (uniqueName !== requestedName) {
+          webSocket.send(JSON.stringify({
+            nameChanged: {
+              requested: requestedName,
+              assigned: uniqueName,
+              message: `昵称 "${requestedName}" 已被使用，自动分配为 "${uniqueName}"`
+            }
+          }));
+        }
 
         // Deliver all the messages we queued up since the user connected.
         session.blockedMessages.forEach(queued => {
@@ -420,6 +487,40 @@ export class ChatRoom {
       // probably isn't what you'd want to do in production, but it's convenient when testing.
       webSocket.send(JSON.stringify({error: err.stack}));
     }
+  }
+
+  // Generate a unique name by checking existing sessions and adding a number suffix if needed
+  generateUniqueName(requestedName) {
+    let existingNames = new Set();
+    
+    // Collect all current user names
+    for (let session of this.sessions.values()) {
+      if (session.name) {
+        existingNames.add(session.name.toLowerCase());
+      }
+    }
+
+    // If the requested name is not taken, use it as is
+    if (!existingNames.has(requestedName.toLowerCase())) {
+      return requestedName;
+    }
+
+    // Find the next available number suffix
+    let counter = 2;
+    let baseName = requestedName;
+    let uniqueName;
+    
+    do {
+      uniqueName = `${baseName}${counter}`;
+      counter++;
+    } while (existingNames.has(uniqueName.toLowerCase()) && counter <= 100);
+
+    // If we couldn't find a unique name after 100 attempts, use a random suffix
+    if (counter > 100) {
+      uniqueName = `${baseName}_${Math.random().toString(36).substr(2, 4)}`;
+    }
+
+    return uniqueName;
   }
 
   // On "close" and "error" events, remove the WebSocket from the sessions list and broadcast
