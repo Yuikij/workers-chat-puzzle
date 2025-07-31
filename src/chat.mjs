@@ -484,15 +484,16 @@ export class RateLimiter {
 
       if (request.method == "POST") {
         // POST request means the user performed an action.
-        // We allow one action per 5 seconds.
-        this.nextAllowedTime += 5;
+        // We allow one action per 1 second (reduced from 5 seconds for better UX).
+        this.nextAllowedTime += 1;
       }
 
       // Return the number of seconds that the client needs to wait.
       //
-      // We provide a "grace" period of 20 seconds, meaning that the client can make 4-5 requests
-      // in a quick burst before they start being limited.
-      let cooldown = Math.max(0, this.nextAllowedTime - now - 20);
+      // We provide a "grace" period of 30 seconds (increased from 20), meaning that the client 
+      // can make 30+ requests in a quick burst before they start being limited.
+      // This allows for better user experience during normal chat usage.
+      let cooldown = Math.max(0, this.nextAllowedTime - now - 30);
       return new Response(cooldown);
     })
   }
