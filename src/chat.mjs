@@ -347,17 +347,37 @@ export class ChatRoom {
       if (!session.name) {
         // The first message the client sends is the user info message with their name. Save it
         // into their session object.
-        session.name = "" + (data.name || "anonymous");
-        // attach name to the webSocket so it survives hibernation
-        webSocket.serializeAttachment({ ...webSocket.deserializeAttachment(), name: session.name });
-
+        let proposedName = "" + (data.name || "anonymous");
+        
         // Don't let people use ridiculously long names. (This is also enforced on the client,
         // so if they get here they are not using the intended client.)
-        if (session.name.length > 32) {
+        if (proposedName.length > 32) {
           webSocket.send(JSON.stringify({error: "Name too long."}));
           webSocket.close(1009, "Name too long.");
           return;
         }
+
+        // Check if the name is already taken in this room
+        let nameExists = false;
+        for (let existingSession of this.sessions.values()) {
+          if (existingSession.name && existingSession.name.toLowerCase() === proposedName.toLowerCase()) {
+            nameExists = true;
+            break;
+          }
+        }
+
+        if (nameExists) {
+          webSocket.send(JSON.stringify({
+            error: `用户名 "${proposedName}" 已被使用，请选择其他用户名。`
+          }));
+          webSocket.close(1008, "Name already taken.");
+          return;
+        }
+
+        // Name is available, set it
+        session.name = proposedName;
+        // attach name to the webSocket so it survives hibernation
+        webSocket.serializeAttachment({ ...webSocket.deserializeAttachment(), name: session.name });
 
         // Deliver all the messages we queued up since the user connected.
         session.blockedMessages.forEach(queued => {

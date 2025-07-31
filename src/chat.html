@@ -269,6 +269,11 @@ body {
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 
+#name-input.error {
+  border-color: var(--error-color);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1);
+}
+
 #name-form p {
   color: var(--text-light);
   font-size: 14px;
@@ -751,6 +756,38 @@ function hideRoomInfo() {
   chatlog.classList.remove("with-room-info");
 }
 
+// Roster management functions
+function addUserToRoster(username) {
+  // Check if user is already in the roster to prevent duplicates
+  const existingUsers = roster.querySelectorAll('p');
+  for (let userElement of existingUsers) {
+    if (userElement.innerText === username) {
+      return; // User already exists, don't add again
+    }
+  }
+  
+  // Add new user
+  let p = document.createElement("p");
+  p.innerText = username;
+  roster.appendChild(p);
+}
+
+function removeUserFromRoster(username) {
+  const existingUsers = roster.querySelectorAll('p');
+  for (let userElement of existingUsers) {
+    if (userElement.innerText === username) {
+      roster.removeChild(userElement);
+      break;
+    }
+  }
+}
+
+function clearRoster() {
+  const rosterHeader = roster.querySelector('h3');
+  roster.innerHTML = '';
+  roster.appendChild(rosterHeader);
+}
+
 // Copy room URL to clipboard
 async function copyRoomUrl() {
   try {
@@ -815,6 +852,7 @@ function startNameChooser() {
 
 function startRoomChooser() {
   nameForm.style.display = "none";
+  roomForm.style.display = "flex";
 
   if (document.location.hash.length > 1) {
     roomname = document.location.hash.slice(1);
@@ -878,7 +916,9 @@ function startRoomChooser() {
 }
 
 function startChat() {
+  nameForm.style.display = "none";
   roomForm.style.display = "none";
+  chatroom.style.display = "block";
   updateConnectionStatus("connecting", '<span class="loading"></span> 连接中...');
 
   // Normalize the room name a bit.
@@ -978,9 +1018,7 @@ function join() {
       updateConnectionStatus("disconnected", "❌ 连接断开");
 
       // Clear the roster.
-      const rosterHeader = roster.querySelector('h3');
-      roster.innerHTML = '';
-      roster.appendChild(rosterHeader);
+      clearRoster();
 
       // Don't try to reconnect too rapidly.
       let timeSinceLastJoin = Date.now() - startTime;
@@ -998,6 +1036,11 @@ function join() {
   ws.addEventListener("open", event => {
     currentWebSocket = ws;
     updateConnectionStatus("connected", "✅ 已连接");
+    
+    // Clear the roster when establishing a new connection to prevent duplicates
+    // The server will send us a fresh list of all online users
+    clearRoster();
+    
     // Send user info message.
     ws.send(JSON.stringify({name: username}));
   });
@@ -1007,17 +1050,41 @@ function join() {
 
     if (data.error) {
       addChatMessage(null, "❌ 错误: " + data.error, true);
-    } else if (data.joined) {
-      let p = document.createElement("p");
-      p.innerText = data.joined;
-      roster.appendChild(p);
-    } else if (data.quit) {
-      for (let child of roster.childNodes) {
-        if (child.innerText == data.quit) {
-          roster.removeChild(child);
-          break;
+      
+      // If it's a name-related error and we haven't shown the ready message yet,
+      // it means the name was rejected, so go back to name selection
+      if (!wroteWelcomeMessages && (data.error.includes("用户名") || data.error.includes("Name"))) {
+        // Close the current WebSocket
+        if (currentWebSocket) {
+          currentWebSocket.close();
+          currentWebSocket = null;
         }
+        
+        // Go back to name chooser
+        updateConnectionStatus("disconnected", "❌ 用户名冲突");
+        roomForm.style.display = "none";
+        nameForm.style.display = "flex";
+        hideRoomInfo();
+        
+        // Show error message and focus on name input
+        nameInput.style.borderColor = "var(--error-color)";
+        nameInput.placeholder = "该用户名已被使用，请重新输入";
+        nameInput.value = "";
+        nameInput.focus();
+        
+        // Reset border color when user starts typing
+        nameInput.addEventListener("input", function resetBorder() {
+          nameInput.style.borderColor = "";
+          nameInput.placeholder = "请输入你的昵称";
+          nameInput.removeEventListener("input", resetBorder);
+        }, { once: true });
+        
+        return;
       }
+    } else if (data.joined) {
+      addUserToRoster(data.joined);
+    } else if (data.quit) {
+      removeUserFromRoster(data.quit);
     } else if (data.ready) {
       // All pre-join messages have been delivered.
       if (!wroteWelcomeMessages) {
@@ -1078,8 +1145,38 @@ function addChatMessage(name, text, isSystem = false) {
   }
 }
 
+// Reset app state
+function resetAppState() {
+  // Clear any existing state
+  currentWebSocket = null;
+  wroteWelcomeMessages = false;
+  lastSeenTimestamp = 0;
+  
+  // Hide all forms except name form
+  nameForm.style.display = "flex";
+  roomForm.style.display = "none";
+  chatroom.style.display = "none";
+  hideRoomInfo();
+  
+  // Clear chat log except spacer
+  const spacer = chatlog.querySelector('#spacer');
+  chatlog.innerHTML = '';
+  chatlog.appendChild(spacer);
+  
+  // Clear roster except header
+  clearRoster();
+  
+  // Reset inputs
+  nameInput.style.borderColor = "";
+  nameInput.placeholder = "请输入你的昵称";
+  nameInput.value = "";
+  roomNameInput.value = "";
+  chatInput.value = "";
+}
+
 // Initialize the app
 updateConnectionStatus("connecting", '<span class="loading"></span> 初始化中...');
+resetAppState();
 startNameChooser();
 </script>
 <!--===================================================================================-->
