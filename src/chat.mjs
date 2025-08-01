@@ -244,6 +244,13 @@ export class ChatRoom {
     // no need to store this to disk since we assume if the object is destroyed and recreated, much
     // more than a millisecond will have gone by.
     this.lastTimestamp = 0;
+
+    // Turtle Soup state management
+    this.turtleSoupActive = false;
+    this.turtleSoupParticipants = [];
+    this.turtleSoupInitiator = null;
+    this.currentTurnIndex = 0;
+    this.pendingConfirmations = new Map(); // initiator -> Set of confirmed users
   }
 
   // The system will call fetch() whenever an HTTP request is sent to this Object. Such requests
@@ -372,6 +379,27 @@ export class ChatRoom {
         return;
       }
 
+      // Handle turtle soup related messages
+      if (data.turtleSoupRequest) {
+        this.handleTurtleSoupRequest(session, data);
+        return;
+      }
+
+      if (data.turtleSoupConfirm) {
+        this.handleTurtleSoupConfirmation(session, data);
+        return;
+      }
+
+      if (data.turtleSoupTurnChange) {
+        this.handleTurtleSoupTurnChange(session, data);
+        return;
+      }
+
+      if (data.turtleSoupEnd) {
+        this.handleTurtleSoupEnd(session, data);
+        return;
+      }
+
       // Construct sanitized message for storage and broadcast.
       data = { name: session.name, message: "" + data.message };
 
@@ -387,6 +415,26 @@ export class ChatRoom {
       // them sequential timestamps, so at least the ordering is maintained.
       data.timestamp = Math.max(Date.now(), this.lastTimestamp + 1);
       this.lastTimestamp = data.timestamp;
+
+      // Check if this is a turtle soup message and handle turn completion
+      if (data.turtleSoupMessage && this.turtleSoupActive) {
+        data.turtleSoupMessage = true; // Preserve the flag for broadcast
+        
+        // Check if it's the correct user's turn
+        if (this.turtleSoupParticipants[this.currentTurnIndex] === session.name) {
+          // Move to next turn
+          this.currentTurnIndex = (this.currentTurnIndex + 1) % this.turtleSoupParticipants.length;
+          
+          // Broadcast turn change after the message
+          setTimeout(() => {
+            this.broadcast({
+              turtleSoupTurnChange: true,
+              turnIndex: this.currentTurnIndex,
+              nextPlayer: this.turtleSoupParticipants[this.currentTurnIndex]
+            });
+          }, 100);
+        }
+      }
 
       // Broadcast the message to all other WebSockets.
       let dataStr = JSON.stringify(data);
@@ -452,6 +500,185 @@ export class ChatRoom {
       if (quitter.name) {
         this.broadcast({quit: quitter.name});
       }
+    });
+  }
+
+  // Turtle Soup related methods
+  handleTurtleSoupRequest(session, data) {
+    console.log(`[TurtleSoup] Request from ${data.initiator}, participants:`, data.participants);
+    
+    if (this.turtleSoupActive) {
+      console.log(`[TurtleSoup] Request rejected - already active`);
+      // Find the websocket for this session
+      let webSocket = null;
+      for (let [ws, sess] of this.sessions.entries()) {
+        if (sess === session) {
+          webSocket = ws;
+          break;
+        }
+      }
+      if (webSocket) {
+        webSocket.send(JSON.stringify({error: "海龟汤已经进行中"}));
+      }
+      return;
+    }
+
+    // Check if there's already a pending request from this initiator
+    if (this.pendingConfirmations.has(data.initiator)) {
+      console.log(`[TurtleSoup] Duplicate request from ${data.initiator}, ignoring`);
+      return;
+    }
+
+    // Get current online users (authoritative server list) and deduplicate
+    const onlineUsersSet = new Set();
+    this.sessions.forEach((session) => {
+      if (session.name) {
+        onlineUsersSet.add(session.name);
+      }
+    });
+    const onlineUsers = Array.from(onlineUsersSet);
+    console.log(`[TurtleSoup] Current online users (deduplicated):`, onlineUsers);
+    console.log(`[TurtleSoup] Client provided participants:`, data.participants);
+
+    // Use server's authoritative list, not client's
+    const actualParticipants = onlineUsers;
+
+    // Initialize pending confirmations for this initiator BEFORE broadcasting
+    this.pendingConfirmations.set(data.initiator, new Set());
+    console.log(`[TurtleSoup] Initialized confirmations for ${data.initiator}`);
+
+    // Broadcast the request to all participants except the initiator
+    this.broadcast({
+      turtleSoupRequest: true,
+      initiator: data.initiator,
+      participants: actualParticipants
+    });
+    
+    // Set timeout for confirmation process
+    setTimeout(() => {
+      if (this.pendingConfirmations.has(data.initiator)) {
+        console.log(`[TurtleSoup] Request timeout for ${data.initiator}`);
+        this.pendingConfirmations.delete(data.initiator);
+        this.broadcast({
+          error: "海龟汤发起超时"
+        });
+      }
+    }, 30000);
+  }
+
+  handleTurtleSoupConfirmation(session, data) {
+    console.log(`[TurtleSoup] Confirmation from ${data.user} for ${data.initiator}: ${data.confirmed}`);
+    
+    if (!this.pendingConfirmations.has(data.initiator)) {
+      console.log(`[TurtleSoup] No pending confirmations for ${data.initiator}`);
+      return; // Request expired or invalid
+    }
+
+    const confirmedUsers = this.pendingConfirmations.get(data.initiator);
+    
+    if (!data.confirmed) {
+      // Someone rejected, cancel the whole thing
+      console.log(`[TurtleSoup] ${data.user} rejected, canceling`);
+      this.pendingConfirmations.delete(data.initiator);
+      this.broadcast({
+        turtleSoupConfirm: true,
+        initiator: data.initiator,
+        confirmed: false,
+        user: data.user
+      });
+      return;
+    }
+
+    // Check if user already confirmed (prevent duplicate confirmations)
+    if (confirmedUsers.has(data.user)) {
+      console.log(`[TurtleSoup] ${data.user} already confirmed, ignoring`);
+      return;
+    }
+
+    // Add to confirmed users
+    confirmedUsers.add(data.user);
+    console.log(`[TurtleSoup] ${data.user} confirmed. Total confirmations:`, confirmedUsers.size);
+    
+    // Broadcast the confirmation
+    this.broadcast({
+      turtleSoupConfirm: true,
+      initiator: data.initiator,
+      confirmed: true,
+      user: data.user
+    });
+
+    // Check if all users have confirmed (exclude the initiator from count)
+    const onlineUsers = [];
+    this.sessions.forEach((session) => {
+      if (session.name) {
+        onlineUsers.push(session.name);
+      }
+    });
+
+    const requiredConfirmations = onlineUsers.filter(user => user !== data.initiator);
+    console.log(`[TurtleSoup] Required confirmations:`, requiredConfirmations);
+    console.log(`[TurtleSoup] Confirmed users:`, Array.from(confirmedUsers));
+    
+    if (confirmedUsers.size === requiredConfirmations.length) {
+      // All users confirmed, start the turtle soup
+      console.log(`[TurtleSoup] All users confirmed, starting turtle soup`);
+      this.startTurtleSoup(data.initiator, onlineUsers);
+      this.pendingConfirmations.delete(data.initiator);
+    } else {
+      console.log(`[TurtleSoup] Still waiting for confirmations: ${confirmedUsers.size}/${requiredConfirmations.length}`);
+    }
+  }
+
+  startTurtleSoup(initiator, participants) {
+    console.log(`[TurtleSoup] Starting turtle soup with initiator: ${initiator}, participants:`, participants);
+    
+    this.turtleSoupActive = true;
+    this.turtleSoupInitiator = initiator;
+    this.turtleSoupParticipants = participants;
+    this.currentTurnIndex = 0;
+
+    // Broadcast start message
+    this.broadcast({
+      turtleSoupStart: true,
+      initiator: initiator,
+      participants: participants
+    });
+    
+    console.log(`[TurtleSoup] Turtle soup started successfully`);
+  }
+
+  handleTurtleSoupTurnChange(session, data) {
+    if (!this.turtleSoupActive || session.name !== this.turtleSoupInitiator) {
+      return; // Only initiator can manage turn changes
+    }
+
+    this.currentTurnIndex = data.turnIndex;
+    
+    // Broadcast turn change
+    this.broadcast({
+      turtleSoupTurnChange: true,
+      turnIndex: data.turnIndex,
+      nextPlayer: data.nextPlayer
+    });
+  }
+
+  handleTurtleSoupEnd(session, data) {
+    if (!this.turtleSoupActive || session.name !== this.turtleSoupInitiator) {
+      return; // Only initiator can end
+    }
+
+    this.endTurtleSoup();
+  }
+
+  endTurtleSoup() {
+    this.turtleSoupActive = false;
+    this.turtleSoupParticipants = [];
+    this.turtleSoupInitiator = null;
+    this.currentTurnIndex = 0;
+
+    // Broadcast end message
+    this.broadcast({
+      turtleSoupEnd: true
     });
   }
 }

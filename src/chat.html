@@ -636,6 +636,131 @@ body {
   border-left: 4px solid var(--error-color);
   color: var(--error-color);
 }
+
+/* Turtle Soup styles */
+.turtle-soup-btn {
+  background: #16a34a;
+  color: white;
+  border: none;
+  border-radius: 20px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  margin-right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.turtle-soup-btn:hover {
+  background: #15803d;
+  transform: translateY(-1px);
+}
+
+.turtle-soup-btn:disabled {
+  background: var(--text-light);
+  cursor: not-allowed;
+  transform: none;
+}
+
+.turtle-soup-status {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: linear-gradient(135deg, #16a34a, #15803d);
+  color: white;
+  padding: 12px 20px;
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  z-index: 200;
+  animation: statusSlideIn 0.3s ease-out;
+}
+
+.turtle-soup-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-weight: 500;
+}
+
+.end-button {
+  background: rgba(255, 255, 255, 0.2);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.end-button:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+@keyframes statusSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+/* Turtle soup mode adjustments */
+.turtle-soup-mode #chatlog {
+  top: 100px;
+}
+
+.turtle-soup-mode #chatlog.with-room-info {
+  top: 160px;
+}
+
+/* Turn indicator animations */
+.turn-indicator-pulse {
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.1);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* Mobile optimizations for turtle soup */
+@media(max-width:768px) {
+  .turtle-soup-status {
+    left: 10px;
+    right: 10px;
+    transform: none;
+    top: 10px;
+  }
+  
+  .turtle-soup-content {
+    flex-direction: column;
+    gap: 8px;
+    text-align: center;
+  }
+  
+  .turtle-soup-mode #chatlog {
+    top: 90px;
+  }
+  
+  .turtle-soup-mode #chatlog.with-room-info {
+    top: 150px;
+  }
+}
 </style>
 
 <!--===================================================================================-->
@@ -686,7 +811,15 @@ body {
       <div id="roster">
         <h3>在线用户</h3>
       </div>
+      <div id="turtle-soup-status" class="turtle-soup-status" style="display: none;">
+        <div class="turtle-soup-content">
+          <span id="turn-indicator">🐢</span>
+          <span id="turn-text">海龟汤进行中...</span>
+          <button id="end-turtle-soup" class="end-button">结束海龟汤</button>
+        </div>
+      </div>
       <div id="chat-input-container">
+        <button id="turtle-soup-button" class="turtle-soup-btn">🐢 发起海龟汤</button>
         <input id="chat-input" placeholder="输入消息..." maxlength="256">
         <button type="submit" id="send-button">📤</button>
       </div>
@@ -715,12 +848,26 @@ let roomInfo = document.querySelector("#room-info");
 let roomTitle = document.querySelector("#room-title");
 let roomUrl = document.querySelector("#room-url");
 let copyRoomButton = document.querySelector("#copy-room-button");
+let turtleSoupButton = document.querySelector("#turtle-soup-button");
+let turtleSoupStatus = document.querySelector("#turtle-soup-status");
+let turnIndicator = document.querySelector("#turn-indicator");
+let turnText = document.querySelector("#turn-text");
+let endTurtleSoupButton = document.querySelector("#end-turtle-soup");
 
 // Is the chatlog scrolled to the bottom?
 let isAtBottom = true;
 
 let username;
 let roomname;
+
+// Turtle Soup state management
+let turtleSoupActive = false;
+let turtleSoupParticipants = [];
+let currentTurnIndex = 0;
+let turtleSoupInitiator = null;
+let pendingConfirmations = new Set();
+let confirmationTimeout = null;
+let hasResponded = false; // Track if user has already responded to current request
 
 let hostname = window.location.host;
 if (hostname == "") {
@@ -921,10 +1068,36 @@ function startChat() {
     sendMessage();
   });
 
+  // Turtle Soup button event listener
+  turtleSoupButton.addEventListener("click", event => {
+    event.preventDefault();
+    initiateTurtleSoup();
+  });
+
+  // End Turtle Soup button event listener
+  endTurtleSoupButton.addEventListener("click", event => {
+    event.preventDefault();
+    endTurtleSoup();
+  });
+
   function sendMessage() {
     const message = chatInput.value.trim();
     if (currentWebSocket && message.length > 0) {
-      currentWebSocket.send(JSON.stringify({message: message}));
+      // Check if turtle soup is active and it's the user's turn
+      if (turtleSoupActive) {
+        if (turtleSoupParticipants[currentTurnIndex] !== username) {
+          addChatMessage(null, "⚠️ 现在不是你的发言轮次，请等待", true);
+          return;
+        }
+        // Send message with turtle soup flag
+        currentWebSocket.send(JSON.stringify({
+          message: message,
+          turtleSoupMessage: true,
+          turnComplete: true
+        }));
+      } else {
+        currentWebSocket.send(JSON.stringify({message: message}));
+      }
       chatInput.value = "";
       // Scroll to bottom whenever sending a message.
       chatlog.scrollBy(0, 1e8);
@@ -1046,11 +1219,31 @@ function join() {
               "👋 欢迎来到 #" + roomname + " 房间，开始聊天吧！你可以点击上方的复制按钮分享房间链接。", true);
         }
       }
+    } else if (data.turtleSoupRequest) {
+      // Handle turtle soup initiation request
+      handleTurtleSoupRequest(data);
+    } else if (data.turtleSoupConfirm) {
+      // Handle turtle soup confirmation
+      handleTurtleSoupConfirmation(data);
+    } else if (data.turtleSoupStart) {
+      // Handle turtle soup start
+      handleTurtleSoupStart(data);
+    } else if (data.turtleSoupTurnChange) {
+      // Handle turn change
+      handleTurnChange(data);
+    } else if (data.turtleSoupEnd) {
+      // Handle turtle soup end
+      handleTurtleSoupEnd(data);
     } else {
       // A regular chat message.
       if (data.timestamp > lastSeenTimestamp) {
         addChatMessage(data.name, data.message);
         lastSeenTimestamp = data.timestamp;
+        
+        // If this is a turtle soup message, handle turn change
+        if (data.turtleSoupMessage && turtleSoupActive) {
+          handleTurtleSoupTurnComplete(data);
+        }
       }
     }
   });
@@ -1087,6 +1280,231 @@ function addChatMessage(name, text, isSystem = false) {
   chatlog.appendChild(p);
   if (isAtBottom) {
     setTimeout(() => chatlog.scrollBy(0, 1e8), 10);
+  }
+}
+
+// Turtle Soup Functions
+function initiateTurtleSoup() {
+  console.log(`[TurtleSoup Client] ${username} initiating turtle soup`);
+  
+  if (turtleSoupActive) {
+    addChatMessage(null, "⚠️ 海龟汤已经进行中", true);
+    return;
+  }
+  
+  // Check if already waiting for confirmations
+  if (turtleSoupButton.disabled) {
+    console.log(`[TurtleSoup Client] Already waiting for confirmations, ignoring duplicate request`);
+    return;
+  }
+  
+  // Get all online users from roster
+  const onlineUsers = [];
+  for (let child of roster.childNodes) {
+    if (child.innerText && child.innerText.trim() !== '在线用户') {
+      onlineUsers.push(child.innerText.trim());
+    }
+  }
+  
+  console.log(`[TurtleSoup Client] Found online users:`, onlineUsers);
+  
+  if (onlineUsers.length < 2) {
+    addChatMessage(null, "⚠️ 需要至少2人才能发起海龟汤", true);
+    return;
+  }
+  
+  // Disable button and send request
+  turtleSoupButton.disabled = true;
+  turtleSoupButton.textContent = "等待确认...";
+  
+  // Send turtle soup request - let server determine participants
+  if (currentWebSocket) {
+    currentWebSocket.send(JSON.stringify({
+      turtleSoupRequest: true,
+      initiator: username,
+      participants: onlineUsers  // Send what we see, but server will use its own list
+    }));
+    console.log(`[TurtleSoup Client] Sent request with participants:`, onlineUsers);
+  }
+  
+  // Set timeout for confirmations
+  confirmationTimeout = setTimeout(() => {
+    console.log(`[TurtleSoup Client] Request timeout`);
+    addChatMessage(null, "⏰ 海龟汤发起超时，请重新尝试", true);
+    resetTurtleSoupButton();
+  }, 30000); // 30 seconds timeout
+}
+
+function handleTurtleSoupRequest(data) {
+  console.log(`[TurtleSoup Client] Received request from ${data.initiator}, participants:`, data.participants);
+  
+  if (data.initiator === username) {
+    // This is our own request, ignore
+    console.log(`[TurtleSoup Client] Ignoring own request`);
+    return;
+  }
+  
+  // Check if already responded to this initiator's request
+  if (hasResponded) {
+    console.log(`[TurtleSoup Client] Already responded to request, ignoring duplicate`);
+    return;
+  }
+  
+  // Show confirmation dialog
+  const confirmStart = confirm(`${data.initiator} 发起了海龟汤，是否参与？\n参与者: ${data.participants.join(', ')}`);
+  console.log(`[TurtleSoup Client] User ${username} confirmed: ${confirmStart}`);
+  
+  // Mark as responded
+  hasResponded = true;
+  
+  if (currentWebSocket) {
+    currentWebSocket.send(JSON.stringify({
+      turtleSoupConfirm: true,
+      initiator: data.initiator,
+      confirmed: confirmStart,
+      user: username
+    }));
+    console.log(`[TurtleSoup Client] Sent confirmation response`);
+  }
+}
+
+function handleTurtleSoupConfirmation(data) {
+  console.log(`[TurtleSoup Client] Confirmation from ${data.user}: ${data.confirmed}`);
+  
+  if (data.confirmed) {
+    addChatMessage(null, `✅ ${data.user} 确认参与海龟汤`, true);
+  } else {
+    addChatMessage(null, `❌ ${data.user} 拒绝参与海龟汤`, true);
+    hasResponded = false; // Reset for next request
+    // Cancel the turtle soup if we are the initiator
+    if (data.initiator === username) {
+      console.log(`[TurtleSoup Client] Canceling due to rejection`);
+      if (confirmationTimeout) {
+        clearTimeout(confirmationTimeout);
+      }
+      resetTurtleSoupButton();
+    }
+  }
+}
+
+function handleTurtleSoupStart(data) {
+  console.log(`[TurtleSoup Client] Starting turtle soup with participants:`, data.participants);
+  
+  turtleSoupActive = true;
+  turtleSoupParticipants = data.participants;
+  currentTurnIndex = 0;
+  turtleSoupInitiator = data.initiator;
+  hasResponded = false; // Reset for next request
+  
+  // Clear confirmation timeout if we are the initiator
+  if (data.initiator === username && confirmationTimeout) {
+    console.log(`[TurtleSoup Client] Clearing confirmation timeout`);
+    clearTimeout(confirmationTimeout);
+    confirmationTimeout = null;
+  }
+  
+  // Update UI
+  document.body.classList.add('turtle-soup-mode');
+  turtleSoupStatus.style.display = 'block';
+  turtleSoupButton.style.display = 'none';
+  
+  updateTurnDisplay();
+  addChatMessage(null, `🐢 海龟汤开始！参与者: ${turtleSoupParticipants.join(', ')}`, true);
+  addChatMessage(null, `规则: 一人一句话轮流发言，发完言自动轮到下一个人`, true);
+  
+  console.log(`[TurtleSoup Client] Turtle soup UI updated successfully`);
+}
+
+function handleTurnChange(data) {
+  currentTurnIndex = data.turnIndex;
+  updateTurnDisplay();
+}
+
+function handleTurtleSoupEnd(data) {
+  endTurtleSoupMode();
+  addChatMessage(null, `🏁 海龟汤结束，感谢参与！`, true);
+}
+
+function handleTurtleSoupTurnComplete(data) {
+  if (data.name === turtleSoupParticipants[currentTurnIndex]) {
+    // Move to next participant
+    currentTurnIndex = (currentTurnIndex + 1) % turtleSoupParticipants.length;
+    
+    // Broadcast turn change
+    if (currentWebSocket && username === turtleSoupInitiator) {
+      currentWebSocket.send(JSON.stringify({
+        turtleSoupTurnChange: true,
+        turnIndex: currentTurnIndex,
+        nextPlayer: turtleSoupParticipants[currentTurnIndex]
+      }));
+    }
+    
+    updateTurnDisplay();
+  }
+}
+
+function updateTurnDisplay() {
+  if (!turtleSoupActive) return;
+  
+  const currentPlayer = turtleSoupParticipants[currentTurnIndex];
+  
+  if (currentPlayer === username) {
+    turnText.textContent = "轮到你发言";
+    turnIndicator.className = "turn-indicator-pulse";
+    chatInput.placeholder = "输入你的发言...";
+    chatInput.disabled = false;
+  } else {
+    turnText.textContent = `轮到 ${currentPlayer} 发言`;
+    turnIndicator.className = "";
+    chatInput.placeholder = `等待 ${currentPlayer} 发言...`;
+    chatInput.disabled = true;
+  }
+}
+
+function endTurtleSoup() {
+  if (!turtleSoupActive) return;
+  
+  if (username !== turtleSoupInitiator) {
+    addChatMessage(null, "⚠️ 只有发起人可以结束海龟汤", true);
+    return;
+  }
+  
+  // Broadcast end message
+  if (currentWebSocket) {
+    currentWebSocket.send(JSON.stringify({
+      turtleSoupEnd: true,
+      initiator: username
+    }));
+  }
+  
+  endTurtleSoupMode();
+}
+
+function endTurtleSoupMode() {
+  turtleSoupActive = false;
+  turtleSoupParticipants = [];
+  currentTurnIndex = 0;
+  turtleSoupInitiator = null;
+  pendingConfirmations.clear();
+  
+  // Update UI
+  document.body.classList.remove('turtle-soup-mode');
+  turtleSoupStatus.style.display = 'none';
+  turtleSoupButton.style.display = 'block';
+  chatInput.disabled = false;
+  chatInput.placeholder = "输入消息...";
+  
+  resetTurtleSoupButton();
+}
+
+function resetTurtleSoupButton() {
+  turtleSoupButton.disabled = false;
+  turtleSoupButton.textContent = "🐢 发起海龟汤";
+  hasResponded = false; // Reset for next request
+  
+  if (confirmationTimeout) {
+    clearTimeout(confirmationTimeout);
+    confirmationTimeout = null;
   }
 }
 
