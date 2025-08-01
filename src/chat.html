@@ -1008,9 +1008,21 @@ function join() {
     if (data.error) {
       addChatMessage(null, "❌ 错误: " + data.error, true);
     } else if (data.joined) {
-      let p = document.createElement("p");
-      p.innerText = data.joined;
-      roster.appendChild(p);
+      // Check if user is already in the roster to avoid duplicates
+      let userExists = false;
+      for (let child of roster.childNodes) {
+        if (child.innerText === data.joined) {
+          userExists = true;
+          break;
+        }
+      }
+      
+      // Only add if user doesn't already exist in roster
+      if (!userExists) {
+        let p = document.createElement("p");
+        p.innerText = data.joined;
+        roster.appendChild(p);
+      }
     } else if (data.quit) {
       for (let child of roster.childNodes) {
         if (child.innerText == data.quit) {
