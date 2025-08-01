@@ -851,7 +851,7 @@ function startRoomChooser() {
     event.currentTarget.innerHTML = '<span class="loading"></span> 创建中...';
 
     try {
-      let response = await fetch("https://" + hostname + "/api/room", {method: "POST"});
+      let response = await fetch(window.location.protocol + "//" + hostname + "/api/room", {method: "POST"});
       if (!response.ok) {
         throw new Error('Failed to create room');
       }
