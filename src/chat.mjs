@@ -544,8 +544,12 @@ export class ChatRoom {
     const actualParticipants = onlineUsers;
 
     // Initialize pending confirmations for this initiator BEFORE broadcasting
-    this.pendingConfirmations.set(data.initiator, new Set());
-    console.log(`[TurtleSoup] Initialized confirmations for ${data.initiator}`);
+    // Store both confirmed users and the original participant list
+    this.pendingConfirmations.set(data.initiator, {
+      confirmedUsers: new Set(),
+      originalParticipants: actualParticipants
+    });
+    console.log(`[TurtleSoup] Initialized confirmations for ${data.initiator} with participants:`, actualParticipants);
 
     // Broadcast the request to all participants except the initiator
     this.broadcast({
@@ -574,7 +578,9 @@ export class ChatRoom {
       return; // Request expired or invalid
     }
 
-    const confirmedUsers = this.pendingConfirmations.get(data.initiator);
+    const confirmationData = this.pendingConfirmations.get(data.initiator);
+    const confirmedUsers = confirmationData.confirmedUsers;
+    const originalParticipants = confirmationData.originalParticipants;
     
     if (!data.confirmed) {
       // Someone rejected, cancel the whole thing
@@ -608,21 +614,17 @@ export class ChatRoom {
     });
 
     // Check if all users have confirmed (exclude the initiator from count)
-    const onlineUsers = [];
-    this.sessions.forEach((session) => {
-      if (session.name) {
-        onlineUsers.push(session.name);
-      }
-    });
-
-    const requiredConfirmations = onlineUsers.filter(user => user !== data.initiator);
+    // Use the original participant list from when the request was made
+    const requiredConfirmations = originalParticipants.filter(user => user !== data.initiator);
+    console.log(`[TurtleSoup] Original participants:`, originalParticipants);
     console.log(`[TurtleSoup] Required confirmations:`, requiredConfirmations);
     console.log(`[TurtleSoup] Confirmed users:`, Array.from(confirmedUsers));
+    console.log(`[TurtleSoup] Confirmation check: ${confirmedUsers.size}/${requiredConfirmations.length}`);
     
     if (confirmedUsers.size === requiredConfirmations.length) {
       // All users confirmed, start the turtle soup
       console.log(`[TurtleSoup] All users confirmed, starting turtle soup`);
-      this.startTurtleSoup(data.initiator, onlineUsers);
+      this.startTurtleSoup(data.initiator, originalParticipants);
       this.pendingConfirmations.delete(data.initiator);
     } else {
       console.log(`[TurtleSoup] Still waiting for confirmations: ${confirmedUsers.size}/${requiredConfirmations.length}`);

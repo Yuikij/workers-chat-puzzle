@@ -1396,8 +1396,8 @@ function handleTurtleSoupStart(data) {
   turtleSoupInitiator = data.initiator;
   hasResponded = false; // Reset for next request
   
-  // Clear confirmation timeout if we are the initiator
-  if (data.initiator === username && confirmationTimeout) {
+  // Clear confirmation timeout for everyone (not just initiator)
+  if (confirmationTimeout) {
     console.log(`[TurtleSoup Client] Clearing confirmation timeout`);
     clearTimeout(confirmationTimeout);
     confirmationTimeout = null;
