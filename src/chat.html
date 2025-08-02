@@ -1059,11 +1059,13 @@ function startChat() {
   });
 
   chatroom.addEventListener("submit", event => {
+    console.log(`[TurtleSoup Client] Form submit event triggered`);
     event.preventDefault();
     sendMessage();
   });
 
   sendButton.addEventListener("click", event => {
+    console.log(`[TurtleSoup Client] Send button clicked`);
     event.preventDefault();
     sendMessage();
   });
@@ -1082,25 +1084,34 @@ function startChat() {
 
   function sendMessage() {
     const message = chatInput.value.trim();
+    console.log(`[TurtleSoup Client] sendMessage called: "${message}", turtleSoupActive: ${turtleSoupActive}`);
+    
     if (currentWebSocket && message.length > 0) {
       // Check if turtle soup is active and it's the user's turn
       if (turtleSoupActive) {
+        console.log(`[TurtleSoup Client] Turtle soup active, checking turn. Current index: ${currentTurnIndex}, current player: ${turtleSoupParticipants[currentTurnIndex]}, username: ${username}`);
         if (turtleSoupParticipants[currentTurnIndex] !== username) {
+          console.log(`[TurtleSoup Client] Not user's turn, blocking message`);
           addChatMessage(null, "⚠️ 现在不是你的发言轮次，请等待", true);
           return;
         }
         // Send message with turtle soup flag
-        currentWebSocket.send(JSON.stringify({
+        const msgData = {
           message: message,
           turtleSoupMessage: true,
           turnComplete: true
-        }));
+        };
+        console.log(`[TurtleSoup Client] Sending turtle soup message:`, msgData);
+        currentWebSocket.send(JSON.stringify(msgData));
       } else {
+        console.log(`[TurtleSoup Client] Normal message mode`);
         currentWebSocket.send(JSON.stringify({message: message}));
       }
       chatInput.value = "";
       // Scroll to bottom whenever sending a message.
       chatlog.scrollBy(0, 1e8);
+    } else {
+      console.log(`[TurtleSoup Client] Cannot send message: WebSocket: ${!!currentWebSocket}, message length: ${message.length}`);
     }
   }
 
@@ -1240,10 +1251,7 @@ function join() {
         addChatMessage(data.name, data.message);
         lastSeenTimestamp = data.timestamp;
         
-        // If this is a turtle soup message, handle turn change
-        if (data.turtleSoupMessage && turtleSoupActive) {
-          handleTurtleSoupTurnComplete(data);
-        }
+        // Turn changes are handled by the server, no client-side processing needed
       }
     }
   });
@@ -1389,6 +1397,9 @@ function handleTurtleSoupConfirmation(data) {
 
 function handleTurtleSoupStart(data) {
   console.log(`[TurtleSoup Client] Starting turtle soup with participants:`, data.participants);
+  console.log(`[TurtleSoup Client] Participants details:`, JSON.stringify(data.participants));
+  console.log(`[TurtleSoup Client] My username:`, username);
+  console.log(`[TurtleSoup Client] Initiator:`, data.initiator);
   
   turtleSoupActive = true;
   turtleSoupParticipants = data.participants;
@@ -1416,6 +1427,7 @@ function handleTurtleSoupStart(data) {
 }
 
 function handleTurnChange(data) {
+  console.log(`[TurtleSoup Client] Turn change received: index ${data.turnIndex}, next player: ${data.nextPlayer}`);
   currentTurnIndex = data.turnIndex;
   updateTurnDisplay();
 }
@@ -1425,39 +1437,26 @@ function handleTurtleSoupEnd(data) {
   addChatMessage(null, `🏁 海龟汤结束，感谢参与！`, true);
 }
 
-function handleTurtleSoupTurnComplete(data) {
-  if (data.name === turtleSoupParticipants[currentTurnIndex]) {
-    // Move to next participant
-    currentTurnIndex = (currentTurnIndex + 1) % turtleSoupParticipants.length;
-    
-    // Broadcast turn change
-    if (currentWebSocket && username === turtleSoupInitiator) {
-      currentWebSocket.send(JSON.stringify({
-        turtleSoupTurnChange: true,
-        turnIndex: currentTurnIndex,
-        nextPlayer: turtleSoupParticipants[currentTurnIndex]
-      }));
-    }
-    
-    updateTurnDisplay();
-  }
-}
+// Removed handleTurtleSoupTurnComplete - server handles all turn changes
 
 function updateTurnDisplay() {
   if (!turtleSoupActive) return;
   
   const currentPlayer = turtleSoupParticipants[currentTurnIndex];
+  console.log(`[TurtleSoup Client] Updating turn display: index ${currentTurnIndex}, player ${currentPlayer}, my username: ${username}`);
   
   if (currentPlayer === username) {
     turnText.textContent = "轮到你发言";
     turnIndicator.className = "turn-indicator-pulse";
     chatInput.placeholder = "输入你的发言...";
     chatInput.disabled = false;
+    console.log(`[TurtleSoup Client] It's my turn, enabled input. chatInput.disabled is now: ${chatInput.disabled}`);
   } else {
     turnText.textContent = `轮到 ${currentPlayer} 发言`;
     turnIndicator.className = "";
     chatInput.placeholder = `等待 ${currentPlayer} 发言...`;
     chatInput.disabled = true;
+    console.log(`[TurtleSoup Client] It's ${currentPlayer}'s turn, disabled input. chatInput.disabled is now: ${chatInput.disabled}`);
   }
 }
 

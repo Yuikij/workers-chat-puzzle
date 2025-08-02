@@ -329,19 +329,24 @@ export class ChatRoom {
 
   async webSocketMessage(webSocket, msg) {
     try {
+      console.log(`[TurtleSoup] webSocketMessage called with msg:`, msg);
       let session = this.sessions.get(webSocket);
+      console.log(`[TurtleSoup] Session found:`, !!session, session ? `name: ${session.name}` : 'no session');
+      
       if (session.quit) {
         // Whoops, when trying to send to this WebSocket in the past, it threw an exception and
         // we marked it broken. But somehow we got another message? I guess try sending a
         // close(), which might throw, in which case we'll try to send an error, which will also
         // throw, and whatever, at least we won't accept the message. (This probably can't
         // actually happen. This is defensive coding.)
+        console.log(`[TurtleSoup] Session marked as quit, closing WebSocket`);
         webSocket.close(1011, "WebSocket broken.");
         return;
       }
 
       // Check if the user is over their rate limit and reject the message if so.
       if (!session.limiter.checkLimit()) {
+        console.log(`[TurtleSoup] Rate limited for ${session.name}`);
         webSocket.send(JSON.stringify({
           error: "Your IP is being rate-limited, please try again later."
         }));
@@ -350,6 +355,7 @@ export class ChatRoom {
 
       // I guess we'll use JSON.
       let data = JSON.parse(msg);
+      console.log(`[TurtleSoup] Received message from ${session.name}:`, data);
 
       if (!session.name) {
         // The first message the client sends is the user info message with their name. Save it
@@ -400,8 +406,18 @@ export class ChatRoom {
         return;
       }
 
+      // Store original turtle soup flag before sanitizing
+      const originalTurtleSoupMessage = data.turtleSoupMessage;
+      console.log(`[TurtleSoup] Original turtleSoupMessage flag:`, originalTurtleSoupMessage);
+      console.log(`[TurtleSoup] Turtle soup active:`, this.turtleSoupActive);
+
       // Construct sanitized message for storage and broadcast.
       data = { name: session.name, message: "" + data.message };
+
+      // Restore turtle soup flag after sanitization
+      if (originalTurtleSoupMessage) {
+        data.turtleSoupMessage = true;
+      }
 
       // Block people from sending overly long messages. This is also enforced on the client,
       // so to trigger this the user must be bypassing the client code.
@@ -420,10 +436,16 @@ export class ChatRoom {
       if (data.turtleSoupMessage && this.turtleSoupActive) {
         data.turtleSoupMessage = true; // Preserve the flag for broadcast
         
+        console.log(`[TurtleSoup] Message from ${session.name}, current turn: ${this.turtleSoupParticipants[this.currentTurnIndex]}`);
+        console.log(`[TurtleSoup] Participants:`, this.turtleSoupParticipants);
+        console.log(`[TurtleSoup] Current turn index:`, this.currentTurnIndex);
+        
         // Check if it's the correct user's turn
         if (this.turtleSoupParticipants[this.currentTurnIndex] === session.name) {
+          console.log(`[TurtleSoup] Correct user's turn, advancing to next`);
           // Move to next turn
           this.currentTurnIndex = (this.currentTurnIndex + 1) % this.turtleSoupParticipants.length;
+          console.log(`[TurtleSoup] New turn index: ${this.currentTurnIndex}, next player: ${this.turtleSoupParticipants[this.currentTurnIndex]}`);
           
           // Broadcast turn change after the message
           setTimeout(() => {
@@ -433,6 +455,8 @@ export class ChatRoom {
               nextPlayer: this.turtleSoupParticipants[this.currentTurnIndex]
             });
           }, 100);
+        } else {
+          console.log(`[TurtleSoup] Wrong user's turn, ignoring message for turn change`);
         }
       }
 
