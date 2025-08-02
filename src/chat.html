@@ -761,6 +761,155 @@ body {
     top: 150px;
   }
 }
+
+/* Confirmation Modal Styles */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.3s ease;
+}
+
+.modal-overlay.visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+.modal {
+  background: var(--background);
+  border-radius: 16px;
+  box-shadow: var(--shadow-lg);
+  max-width: 450px;
+  width: 90%;
+  margin: 20px;
+  animation: modalSlideIn 0.3s ease-out;
+}
+
+.modal-header {
+  padding: 24px 24px 0 24px;
+  text-align: center;
+}
+
+.modal-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-color);
+  margin: 0 0 8px 0;
+}
+
+.modal-subtitle {
+  font-size: 14px;
+  color: var(--text-light);
+  margin: 0;
+}
+
+.modal-body {
+  padding: 20px 24px;
+}
+
+.modal-content {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.modal-content p {
+  margin: 0 0 12px 0;
+  color: var(--text-color);
+  line-height: 1.5;
+}
+
+.participants-list {
+  background: var(--secondary-color);
+  border-radius: 8px;
+  padding: 12px;
+  margin: 12px 0;
+  font-size: 14px;
+  color: var(--text-color);
+}
+
+.modal-footer {
+  padding: 0 24px 24px 24px;
+  display: flex;
+  gap: 12px;
+}
+
+.modal-button {
+  flex: 1;
+  height: 48px;
+  border: none;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.modal-button.primary {
+  background: var(--primary-color);
+  color: white;
+}
+
+.modal-button.primary:hover {
+  background: var(--primary-hover);
+  transform: translateY(-1px);
+}
+
+.modal-button.secondary {
+  background: transparent;
+  color: var(--text-light);
+  border: 2px solid var(--border-color);
+}
+
+.modal-button.secondary:hover {
+  border-color: var(--text-light);
+  color: var(--text-color);
+  transform: translateY(-1px);
+}
+
+@keyframes modalSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Mobile optimizations for modal */
+@media(max-width:480px) {
+  .modal {
+    margin: 16px;
+    width: calc(100% - 32px);
+  }
+  
+  .modal-header {
+    padding: 20px 20px 0 20px;
+  }
+  
+  .modal-body {
+    padding: 16px 20px;
+  }
+  
+  .modal-footer {
+    padding: 0 20px 20px 20px;
+    flex-direction: column;
+  }
+  
+  .modal-title {
+    font-size: 18px;
+  }
+}
 </style>
 
 <!--===================================================================================-->
@@ -824,6 +973,30 @@ body {
         <button type="submit" id="send-button">📤</button>
       </div>
     </form>
+
+    <!-- Confirmation Modal -->
+    <div id="confirmation-modal" class="modal-overlay">
+      <div class="modal">
+        <div class="modal-header">
+          <h3 class="modal-title">🐢 海龟汤邀请</h3>
+          <p class="modal-subtitle">有人邀请你参加海龟汤游戏</p>
+        </div>
+        <div class="modal-body">
+          <div class="modal-content">
+            <p id="modal-initiator-text"></p>
+            <div class="participants-list">
+              <strong>参与者：</strong>
+              <span id="modal-participants-list"></span>
+            </div>
+            <p>海龟汤是一种推理游戏，参与者轮流发言进行推理。是否要参与这次游戏？</p>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="modal-decline-btn" class="modal-button secondary">拒绝</button>
+          <button id="modal-accept-btn" class="modal-button primary">参与</button>
+        </div>
+      </div>
+    </div>
   </body>
 
 <!--===================================================================================-->
@@ -853,6 +1026,13 @@ let turtleSoupStatus = document.querySelector("#turtle-soup-status");
 let turnIndicator = document.querySelector("#turn-indicator");
 let turnText = document.querySelector("#turn-text");
 let endTurtleSoupButton = document.querySelector("#end-turtle-soup");
+
+// Modal elements
+let confirmationModal = document.querySelector("#confirmation-modal");
+let modalInitiatorText = document.querySelector("#modal-initiator-text");
+let modalParticipantsList = document.querySelector("#modal-participants-list");
+let modalAcceptBtn = document.querySelector("#modal-accept-btn");
+let modalDeclineBtn = document.querySelector("#modal-decline-btn");
 
 // Is the chatlog scrolled to the bottom?
 let isAtBottom = true;
@@ -897,6 +1077,65 @@ function hideRoomInfo() {
   roomInfo.classList.remove("visible");
   chatlog.classList.remove("with-room-info");
 }
+
+// Modal functions
+function showConfirmationModal(initiator, participants, onConfirm) {
+  modalInitiatorText.textContent = `${initiator} 发起了海龟汤邀请`;
+  modalParticipantsList.textContent = participants.join(', ');
+  
+  // Reset event listeners to avoid multiple bindings
+  modalAcceptBtn.replaceWith(modalAcceptBtn.cloneNode(true));
+  modalDeclineBtn.replaceWith(modalDeclineBtn.cloneNode(true));
+  
+  // Get new references after cloning
+  modalAcceptBtn = document.querySelector("#modal-accept-btn");
+  modalDeclineBtn = document.querySelector("#modal-decline-btn");
+  
+  // Add event listeners
+  modalAcceptBtn.addEventListener('click', () => {
+    hideConfirmationModal();
+    onConfirm(true);
+  });
+  
+  modalDeclineBtn.addEventListener('click', () => {
+    hideConfirmationModal();
+    onConfirm(false);
+  });
+  
+  // Show modal with animation
+  confirmationModal.classList.add('visible');
+  
+  // Focus on accept button for better UX
+  setTimeout(() => {
+    modalAcceptBtn.focus();
+  }, 100);
+}
+
+function hideConfirmationModal() {
+  confirmationModal.classList.remove('visible');
+}
+
+// Close modal when clicking outside
+confirmationModal.addEventListener('click', (e) => {
+  if (e.target === confirmationModal) {
+    hideConfirmationModal();
+    // Treat clicking outside as decline
+    if (modalDeclineBtn) {
+      modalDeclineBtn.click();
+    }
+  }
+});
+
+// ESC key to close modal
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && confirmationModal.classList.contains('visible')) {
+    hideConfirmationModal();
+    // Treat ESC as decline
+    if (modalDeclineBtn) {
+      modalDeclineBtn.click();
+    }
+  }
+});
 
 // Copy room URL to clipboard
 async function copyRoomUrl() {
@@ -1358,22 +1597,23 @@ function handleTurtleSoupRequest(data) {
     return;
   }
   
-  // Show confirmation dialog
-  const confirmStart = confirm(`${data.initiator} 发起了海龟汤，是否参与？\n参与者: ${data.participants.join(', ')}`);
-  console.log(`[TurtleSoup Client] User ${username} confirmed: ${confirmStart}`);
-  
-  // Mark as responded
-  hasResponded = true;
-  
-  if (currentWebSocket) {
-    currentWebSocket.send(JSON.stringify({
-      turtleSoupConfirm: true,
-      initiator: data.initiator,
-      confirmed: confirmStart,
-      user: username
-    }));
-    console.log(`[TurtleSoup Client] Sent confirmation response`);
-  }
+  // Show confirmation modal
+  showConfirmationModal(data.initiator, data.participants, (confirmed) => {
+    console.log(`[TurtleSoup Client] User ${username} confirmed: ${confirmed}`);
+    
+    // Mark as responded
+    hasResponded = true;
+    
+    if (currentWebSocket) {
+      currentWebSocket.send(JSON.stringify({
+        turtleSoupConfirm: true,
+        initiator: data.initiator,
+        confirmed: confirmed,
+        user: username
+      }));
+      console.log(`[TurtleSoup Client] Sent confirmation response`);
+    }
+  });
 }
 
 function handleTurtleSoupConfirmation(data) {
