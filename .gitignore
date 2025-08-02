@@ -2,3 +2,4 @@ credentials.conf
 metadata.json
 .wrangler/
 .wrangler/tmp/*
+.dev.vars

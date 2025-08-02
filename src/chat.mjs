@@ -1,64 +1,17 @@
-// This is the Edge Chat Demo Worker, built using Durable Objects!
+/**
+ * Edge Chat Demo Worker with Turtle Soup Game Features
+ * Built using Cloudflare Workers Durable Objects
+ * 
+ * Features:
+ * - Real-time chat rooms
+ * - Turtle Soup game mode with turn-based gameplay
+ * - AI Host mode with LLM integration
+ * - Rate limiting and user management
+ */
 
-// ===============================
-// Introduction to Modules
-// ===============================
-//
-// The first thing you might notice, if you are familiar with the Workers platform, is that this
-// Worker is written differently from others you may have seen. It even has a different file
-// extension. The `mjs` extension means this JavaScript is an ES Module, which, among other things,
-// means it has imports and exports. Unlike other Workers, this code doesn't use
-// `addEventListener("fetch", handler)` to register its main HTTP handler; instead, it _exports_
-// a handler, as we'll see below.
-//
-// This is a new way of writing Workers that we expect to introduce more broadly in the future. We
-// like this syntax because it is *composable*: You can take two workers written this way and
-// merge them into one worker, by importing the two Workers' exported handlers yourself, and then
-// exporting a new handler that call into the other Workers as appropriate.
-//
-// This new syntax is required when using Durable Objects, because your Durable Objects are
-// implemented by classes, and those classes need to be exported. The new syntax can be used for
-// writing regular Workers (without Durable Objects) too, but for now, you must be in the Durable
-// Objects beta to be able to use the new syntax, while we work out the quirks.
-//
-// To see an example configuration for uploading module-based Workers, check out the wrangler.toml
-// file or one of our Durable Object templates for Wrangler:
-//   * https://github.com/cloudflare/durable-objects-template
-//   * https://github.com/cloudflare/durable-objects-rollup-esm
-//   * https://github.com/cloudflare/durable-objects-webpack-commonjs
-
-// ===============================
-// Required Environment
-// ===============================
-//
-// This worker, when deployed, must be configured with two environment bindings:
-// * rooms: A Durable Object namespace binding mapped to the ChatRoom class.
-// * limiters: A Durable Object namespace binding mapped to the RateLimiter class.
-//
-// Incidentally, in pre-modules Workers syntax, "bindings" (like KV bindings, secrets, etc.)
-// appeared in your script as global variables, but in the new modules syntax, this is no longer
-// the case. Instead, bindings are now delivered in an "environment object" when an event handler
-// (or Durable Object class constructor) is called. Look for the variable `env` below.
-//
-// We made this change, again, for composability: The global scope is global, but if you want to
-// call into existing code that has different environment requirements, then you need to be able
-// to pass the environment as a parameter instead.
-//
-// Once again, see the wrangler.toml file to understand how the environment is configured.
-
-// =======================================================================================
-// The regular Worker part...
-//
-// This section of the code implements a normal Worker that receives HTTP requests from external
-// clients. This part is stateless.
-
-// With the introduction of modules, we're experimenting with allowing text/data blobs to be
-// uploaded and exposed as synthetic modules. In wrangler.toml we specify a rule that files ending
-// in .html should be uploaded as "Data", equivalent to content-type `application/octet-stream`.
-// So when we import it as `HTML` here, we get the HTML content as an `ArrayBuffer`. This lets us
-// serve our app's static asset without relying on any separate storage. (However, the space
-// available for assets served this way is very limited; larger sites should continue to use Workers
-// KV to serve assets.)
+import { createAIHost } from './lib/ai-host.mjs';
+import { PuzzleManager } from './lib/puzzle-manager.mjs';
+import { safeJsonParse, safeJsonStringify, safeString, generateId, createErrorResponse } from './lib/utils.mjs';
 import HTML from "./chat.html";
 
 // `handleErrors()` is a little utility function that can wrap an HTTP request handler in a
@@ -208,49 +161,146 @@ async function handleApiRequest(path, request, env) {
 // to all others.
 export class ChatRoom {
   constructor(state, env) {
-    this.state = state
-
-    // `state.storage` provides access to our durable storage. It provides a simple KV
-    // get()/put() interface.
+    this.state = state;
     this.storage = state.storage;
-
-    // `env` is our environment bindings (discussed earlier).
     this.env = env;
-
-    // We will track metadata for each client WebSocket object in `sessions`.
+    
+    // Initialize core properties
     this.sessions = new Map();
-    this.state.getWebSockets().forEach((webSocket) => {
-      // The constructor may have been called when waking up from hibernation,
-      // so get previously serialized metadata for any existing WebSockets.
-      let meta = webSocket.deserializeAttachment();
-
-      // Set up our rate limiter client.
-      // The client itself can't have been in the attachment, because structured clone doesn't work on functions.
-      // DO ids aren't cloneable, restore the ID from its hex string
-      let limiterId = this.env.limiters.idFromString(meta.limiterId);
-      let limiter = new RateLimiterClient(
-        () => this.env.limiters.get(limiterId),
-        err => webSocket.close(1011, err.stack));
-
-      // We don't send any messages to the client until it has sent us the initial user info
-      // message. Until then, we will queue messages in `session.blockedMessages`.
-      // This could have been arbitrarily large, so we won't put it in the attachment.
-      let blockedMessages = [];
-      this.sessions.set(webSocket, { ...meta, limiter, blockedMessages });
-    });
-
-    // We keep track of the last-seen message's timestamp just so that we can assign monotonically
-    // increasing timestamps even if multiple messages arrive simultaneously (see below). There's
-    // no need to store this to disk since we assume if the object is destroyed and recreated, much
-    // more than a millisecond will have gone by.
     this.lastTimestamp = 0;
+    
+    // Initialize game states (will be done async in first fetch call)
+    this.gameStateInitialized = false;
+    
+    // Restore WebSocket sessions from hibernation
+    this.restoreWebSocketSessions();
+  }
 
+  /**
+   * Initialize all game state variables
+   */
+  async initializeGameStates() {
+    // Try to restore game state from storage first
+    await this.restoreGameState();
+    
+    // Initialize puzzle manager
+    this.puzzleManager = new PuzzleManager();
+  }
+
+  /**
+   * Restore game state from storage
+   */
+  async restoreGameState() {
+    try {
+      const gameState = await this.storage.get('gameState');
+      if (gameState) {
+        const state = JSON.parse(gameState);
+        console.log('[ChatRoom] Restoring game state:', state);
+        
+        // Restore turtle soup state
+        this.turtleSoupActive = state.turtleSoupActive || false;
+        this.turtleSoupParticipants = state.turtleSoupParticipants || [];
+        this.turtleSoupInitiator = state.turtleSoupInitiator || null;
+        this.currentTurnIndex = state.currentTurnIndex || 0;
+        this.currentPuzzle = state.currentPuzzle || null;
+        
+        // Restore AI host state
+        this.aiHostActive = state.aiHostActive || false;
+        this.aiHostInitiator = state.aiHostInitiator || null;
+        this.aiHostParticipants = state.aiHostParticipants || [];
+        
+        // Restore user scores
+        this.userScores = new Map(state.userScores || []);
+        this.pendingConfirmations = new Map();
+        
+        // If AI host was active, need to recreate AI host instance
+        if (this.aiHostActive && state.aiHostData) {
+          this.aiHost = createAIHost(this.env);
+          // Note: May need to restore AI host internal state if needed
+        }
+        
+        console.log('[ChatRoom] Game state restored successfully');
+      } else {
+        // Initialize default state
+        this.initializeDefaultGameState();
+      }
+    } catch (error) {
+      console.error('[ChatRoom] Failed to restore game state:', error);
+      this.initializeDefaultGameState();
+    }
+  }
+
+  /**
+   * Initialize default game state
+   */
+  initializeDefaultGameState() {
     // Turtle Soup state management
     this.turtleSoupActive = false;
     this.turtleSoupParticipants = [];
     this.turtleSoupInitiator = null;
     this.currentTurnIndex = 0;
-    this.pendingConfirmations = new Map(); // initiator -> Set of confirmed users
+    this.pendingConfirmations = new Map();
+    this.userScores = new Map();
+    this.currentPuzzle = null;
+    
+    // AI Host state management
+    this.aiHostActive = false;
+    this.aiHostInitiator = null;
+    this.aiHostParticipants = [];
+    this.aiHost = null;
+  }
+
+  /**
+   * Save current game state to storage
+   */
+  async saveGameState() {
+    try {
+      const gameState = {
+        turtleSoupActive: this.turtleSoupActive,
+        turtleSoupParticipants: this.turtleSoupParticipants,
+        turtleSoupInitiator: this.turtleSoupInitiator,
+        currentTurnIndex: this.currentTurnIndex,
+        currentPuzzle: this.currentPuzzle,
+        aiHostActive: this.aiHostActive,
+        aiHostInitiator: this.aiHostInitiator,
+        aiHostParticipants: this.aiHostParticipants,
+        userScores: Array.from(this.userScores.entries()),
+        timestamp: Date.now()
+      };
+      
+      await this.storage.put('gameState', JSON.stringify(gameState));
+      console.log('[ChatRoom] Game state saved');
+    } catch (error) {
+      console.error('[ChatRoom] Failed to save game state:', error);
+    }
+  }
+
+  /**
+   * Restore WebSocket sessions from hibernation
+   */
+  restoreWebSocketSessions() {
+    this.state.getWebSockets().forEach((webSocket) => {
+      try {
+        const meta = webSocket.deserializeAttachment() || {};
+        
+        if (meta.limiterId) {
+          const limiterId = this.env.limiters.idFromString(meta.limiterId);
+          const limiter = new RateLimiterClient(
+            () => this.env.limiters.get(limiterId),
+            err => webSocket.close(1011, err.stack)
+          );
+          
+          this.sessions.set(webSocket, { 
+            ...meta, 
+            limiter, 
+            blockedMessages: [] 
+          });
+        }
+      } catch (error) {
+        console.error('[ChatRoom] Failed to restore WebSocket session:', error);
+        webSocket.close(1011, 'Session restoration failed');
+      }
+    });
   }
 
   // The system will call fetch() whenever an HTTP request is sent to this Object. Such requests
@@ -294,6 +344,12 @@ export class ChatRoom {
 
   // handleSession() implements our WebSocket-based chat protocol.
   async handleSession(webSocket, ip) {
+    // Ensure game state is initialized before handling any sessions
+    if (!this.gameStateInitialized) {
+      await this.initializeGameStates();
+      this.gameStateInitialized = true;
+    }
+
     // Accept our end of the WebSocket. This tells the runtime that we'll be terminating the
     // WebSocket in JavaScript, not sending it elsewhere.
     this.state.acceptWebSocket(webSocket);
@@ -329,148 +385,244 @@ export class ChatRoom {
 
   async webSocketMessage(webSocket, msg) {
     try {
-      console.log(`[TurtleSoup] webSocketMessage called with msg:`, msg);
-      let session = this.sessions.get(webSocket);
-      console.log(`[TurtleSoup] Session found:`, !!session, session ? `name: ${session.name}` : 'no session');
+      const session = this.sessions.get(webSocket);
       
+      // Validate session state
+      if (!session) {
+        console.warn('[ChatRoom] Message received for unknown session');
+        webSocket.close(1011, 'Session not found');
+        return;
+      }
+
       if (session.quit) {
-        // Whoops, when trying to send to this WebSocket in the past, it threw an exception and
-        // we marked it broken. But somehow we got another message? I guess try sending a
-        // close(), which might throw, in which case we'll try to send an error, which will also
-        // throw, and whatever, at least we won't accept the message. (This probably can't
-        // actually happen. This is defensive coding.)
-        console.log(`[TurtleSoup] Session marked as quit, closing WebSocket`);
-        webSocket.close(1011, "WebSocket broken.");
+        console.log('[ChatRoom] Session marked as quit, closing WebSocket');
+        webSocket.close(1011, 'WebSocket broken');
         return;
       }
 
-      // Check if the user is over their rate limit and reject the message if so.
+      // Check rate limiting
       if (!session.limiter.checkLimit()) {
-        console.log(`[TurtleSoup] Rate limited for ${session.name}`);
-        webSocket.send(JSON.stringify({
-          error: "Your IP is being rate-limited, please try again later."
-        }));
+        this.sendError(webSocket, 'Your IP is being rate-limited, please try again later.');
         return;
       }
 
-      // I guess we'll use JSON.
-      let data = JSON.parse(msg);
-      console.log(`[TurtleSoup] Received message from ${session.name}:`, data);
+      // Parse message safely
+      const data = safeJsonParse(msg);
+      if (!data) {
+        this.sendError(webSocket, 'Invalid message format');
+        return;
+      }
 
+      console.log(`[ChatRoom] Message from ${session.name || 'anonymous'}:`, data);
+
+      // Handle initial user setup
       if (!session.name) {
-        // The first message the client sends is the user info message with their name. Save it
-        // into their session object.
-        session.name = "" + (data.name || "anonymous");
-        // attach name to the webSocket so it survives hibernation
-        webSocket.serializeAttachment({ ...webSocket.deserializeAttachment(), name: session.name });
+        return await this.handleUserSetup(webSocket, session, data);
+      }
 
-        // Don't let people use ridiculously long names. (This is also enforced on the client,
-        // so if they get here they are not using the intended client.)
-        if (session.name.length > 32) {
-          webSocket.send(JSON.stringify({error: "Name too long."}));
-          webSocket.close(1009, "Name too long.");
-          return;
-        }
-
-        // Deliver all the messages we queued up since the user connected.
-        session.blockedMessages.forEach(queued => {
-          webSocket.send(queued);
-        });
-        delete session.blockedMessages;
-
-        // Broadcast to all other connections that this user has joined.
-        this.broadcast({joined: session.name});
-
-        webSocket.send(JSON.stringify({ready: true}));
+      // Handle special message types
+      if (await this.handleSpecialMessages(session, data)) {
         return;
       }
 
-      // Handle turtle soup related messages
-      if (data.turtleSoupRequest) {
-        this.handleTurtleSoupRequest(session, data);
-        return;
-      }
+      // Handle regular chat messages
+      await this.handleChatMessage(webSocket, session, data);
 
-      if (data.turtleSoupConfirm) {
-        this.handleTurtleSoupConfirmation(session, data);
-        return;
-      }
-
-      if (data.turtleSoupTurnChange) {
-        this.handleTurtleSoupTurnChange(session, data);
-        return;
-      }
-
-      if (data.turtleSoupEnd) {
-        this.handleTurtleSoupEnd(session, data);
-        return;
-      }
-
-      // Store original turtle soup flag before sanitizing
-      const originalTurtleSoupMessage = data.turtleSoupMessage;
-      console.log(`[TurtleSoup] Original turtleSoupMessage flag:`, originalTurtleSoupMessage);
-      console.log(`[TurtleSoup] Turtle soup active:`, this.turtleSoupActive);
-
-      // Construct sanitized message for storage and broadcast.
-      data = { name: session.name, message: "" + data.message };
-
-      // Restore turtle soup flag after sanitization
-      if (originalTurtleSoupMessage) {
-        data.turtleSoupMessage = true;
-      }
-
-      // Block people from sending overly long messages. This is also enforced on the client,
-      // so to trigger this the user must be bypassing the client code.
-      if (data.message.length > 256) {
-        webSocket.send(JSON.stringify({error: "Message too long."}));
-        return;
-      }
-
-      // Add timestamp. Here's where this.lastTimestamp comes in -- if we receive a bunch of
-      // messages at the same time (or if the clock somehow goes backwards????), we'll assign
-      // them sequential timestamps, so at least the ordering is maintained.
-      data.timestamp = Math.max(Date.now(), this.lastTimestamp + 1);
-      this.lastTimestamp = data.timestamp;
-
-      // Check if this is a turtle soup message and handle turn completion
-      if (data.turtleSoupMessage && this.turtleSoupActive) {
-        data.turtleSoupMessage = true; // Preserve the flag for broadcast
-        
-        console.log(`[TurtleSoup] Message from ${session.name}, current turn: ${this.turtleSoupParticipants[this.currentTurnIndex]}`);
-        console.log(`[TurtleSoup] Participants:`, this.turtleSoupParticipants);
-        console.log(`[TurtleSoup] Current turn index:`, this.currentTurnIndex);
-        
-        // Check if it's the correct user's turn
-        if (this.turtleSoupParticipants[this.currentTurnIndex] === session.name) {
-          console.log(`[TurtleSoup] Correct user's turn, advancing to next`);
-          // Move to next turn
-          this.currentTurnIndex = (this.currentTurnIndex + 1) % this.turtleSoupParticipants.length;
-          console.log(`[TurtleSoup] New turn index: ${this.currentTurnIndex}, next player: ${this.turtleSoupParticipants[this.currentTurnIndex]}`);
-          
-          // Broadcast turn change after the message
-          setTimeout(() => {
-            this.broadcast({
-              turtleSoupTurnChange: true,
-              turnIndex: this.currentTurnIndex,
-              nextPlayer: this.turtleSoupParticipants[this.currentTurnIndex]
-            });
-          }, 100);
-        } else {
-          console.log(`[TurtleSoup] Wrong user's turn, ignoring message for turn change`);
-        }
-      }
-
-      // Broadcast the message to all other WebSockets.
-      let dataStr = JSON.stringify(data);
-      this.broadcast(dataStr);
-
-      // Save message.
-      let key = new Date(data.timestamp).toISOString();
-      await this.storage.put(key, dataStr);
     } catch (err) {
-      // Report any exceptions directly back to the client. As with our handleErrors() this
-      // probably isn't what you'd want to do in production, but it's convenient when testing.
-      webSocket.send(JSON.stringify({error: err.stack}));
+      console.error('[ChatRoom] WebSocket message error:', err);
+      this.sendError(webSocket, 'Internal server error');
+    }
+  }
+
+  /**
+   * Handle user setup (first message with name)
+   */
+  async handleUserSetup(webSocket, session, data) {
+    const userName = safeString(data.name || 'anonymous', 32);
+    
+    if (userName.length > 32) {
+      this.sendError(webSocket, 'Name too long');
+      webSocket.close(1009, 'Name too long');
+      return;
+    }
+
+    session.name = userName;
+    webSocket.serializeAttachment({ 
+      ...webSocket.deserializeAttachment(), 
+      name: session.name 
+    });
+
+    // Send queued messages
+    session.blockedMessages.forEach(queued => {
+      webSocket.send(queued);
+    });
+    delete session.blockedMessages;
+
+    // Notify others of user join
+    this.broadcast({ joined: session.name });
+    
+    // Send current game state if requested
+    if (data.requestGameState && (this.turtleSoupActive || this.aiHostActive)) {
+      const currentGameState = {
+        gameStateSync: true,
+        turtleSoupActive: this.turtleSoupActive,
+        turtleSoupParticipants: this.turtleSoupParticipants,
+        turtleSoupInitiator: this.turtleSoupInitiator,
+        currentTurnIndex: this.currentTurnIndex,
+        aiHostActive: this.aiHostActive,
+        aiHostInitiator: this.aiHostInitiator,
+        aiHostParticipants: this.aiHostParticipants,
+        currentPuzzle: this.currentPuzzle
+      };
+      
+      console.log(`[ChatRoom] Sending game state sync to ${userName}:`, currentGameState);
+      webSocket.send(safeJsonStringify(currentGameState));
+    }
+    
+    webSocket.send(safeJsonStringify({ ready: true }));
+  }
+
+  /**
+   * Handle special message types (turtle soup, AI host, etc.)
+   */
+  async handleSpecialMessages(session, data) {
+    const handlers = {
+      turtleSoupRequest: () => this.handleTurtleSoupRequest(session, data),
+      turtleSoupConfirm: () => this.handleTurtleSoupConfirmation(session, data),
+      turtleSoupTurnChange: () => this.handleTurtleSoupTurnChange(session, data),
+      turtleSoupEnd: () => this.handleTurtleSoupEnd(session, data),
+      turtleSoupPuzzleSelected: () => this.handleTurtleSoupPuzzleSelected(session, data),
+      aiHostRequest: () => this.handleAIHostRequest(session, data),
+      aiHostEnd: () => this.handleAIHostEnd(session, data)
+    };
+
+    for (const [type, handler] of Object.entries(handlers)) {
+      if (data[type]) {
+        await handler();
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
+  /**
+   * Handle regular chat messages
+   */
+  async handleChatMessage(webSocket, session, data) {
+    // Validate message
+    const message = safeString(data.message, 256);
+    if (message.length > 256) {
+      this.sendError(webSocket, 'Message too long');
+      return;
+    }
+
+    // Prepare message data
+    const messageData = {
+      name: session.name,
+      message: message,
+      timestamp: Math.max(Date.now(), this.lastTimestamp + 1),
+      turtleSoupMessage: !!data.turtleSoupMessage,
+      aiHostQuestion: !!data.aiHostQuestion
+    };
+    this.lastTimestamp = messageData.timestamp;
+
+    // Handle turtle soup with AI host mode
+    if (messageData.turtleSoupMessage && messageData.aiHostQuestion && this.turtleSoupActive && this.aiHostActive) {
+      console.log(`[TurtleSoup-AI] Processing AI question from ${session.name}: "${message}"`);
+      await this.handleTurtleSoupAIMessage(session, messageData);
+      return;
+    }
+
+    // Handle AI host mode (standalone)
+    if (this.aiHostActive && !messageData.turtleSoupMessage) {
+      console.log(`[AI Host] Processing question from ${session.name}: "${message}"`);
+      await this.processAIHostQuestion(session.name, message);
+      return;
+    }
+
+    // Handle turtle soup mode (without AI)
+    if (messageData.turtleSoupMessage && this.turtleSoupActive && !this.aiHostActive) {
+      await this.handleTurtleSoupMessage(session, messageData);
+    }
+
+    // Broadcast and save message
+    const messageStr = safeJsonStringify(messageData);
+    this.broadcast(messageStr);
+    
+    const key = new Date(messageData.timestamp).toISOString();
+    await this.storage.put(key, messageStr);
+  }
+
+  /**
+   * Handle turtle soup game message
+   */
+  async handleTurtleSoupMessage(session, messageData) {
+    const currentPlayer = this.turtleSoupParticipants[this.currentTurnIndex];
+    
+    if (currentPlayer !== session.name) {
+      console.log(`[TurtleSoup] Wrong user's turn: ${session.name} vs ${currentPlayer}`);
+      return;
+    }
+
+    console.log(`[TurtleSoup] Processing turn for ${session.name}`);
+    
+    // Generate AI response and update scores
+    const aiResponse = this.generateAIResponse(messageData.message);
+    this.updateUserScore(session.name, aiResponse.score);
+    
+    // Advance turn
+    this.currentTurnIndex = (this.currentTurnIndex + 1) % this.turtleSoupParticipants.length;
+    
+    // Schedule AI response and turn change
+    this.scheduleAIResponse(aiResponse);
+  }
+
+  /**
+   * Schedule AI response and turn change
+   */
+  scheduleAIResponse(aiResponse) {
+    setTimeout(() => {
+      this.broadcast({
+        name: "🤖 AI主持人",
+        message: aiResponse.formatted,
+        timestamp: Math.max(Date.now(), this.lastTimestamp + 1),
+        aiResponse: true
+      });
+      
+      this.lastTimestamp = Math.max(Date.now(), this.lastTimestamp + 1);
+      
+      setTimeout(() => {
+        this.broadcast({
+          turtleSoupTurnChange: true,
+          turnIndex: this.currentTurnIndex,
+          nextPlayer: this.turtleSoupParticipants[this.currentTurnIndex],
+          userScores: Object.fromEntries(this.userScores)
+        });
+      }, 500);
+    }, 1000);
+  }
+
+  /**
+   * Update user score
+   */
+  updateUserScore(userName, score) {
+    if (!this.userScores.has(userName)) {
+      this.userScores.set(userName, { totalScore: 0, questionCount: 0 });
+    }
+    const userScore = this.userScores.get(userName);
+    userScore.totalScore += score;
+    userScore.questionCount += 1;
+  }
+
+  /**
+   * Send error message to WebSocket
+   */
+  sendError(webSocket, message) {
+    try {
+      webSocket.send(safeJsonStringify({ error: message }));
+    } catch (err) {
+      console.error('[ChatRoom] Failed to send error message:', err);
     }
   }
 
@@ -533,17 +685,7 @@ export class ChatRoom {
     
     if (this.turtleSoupActive) {
       console.log(`[TurtleSoup] Request rejected - already active`);
-      // Find the websocket for this session
-      let webSocket = null;
-      for (let [ws, sess] of this.sessions.entries()) {
-        if (sess === session) {
-          webSocket = ws;
-          break;
-        }
-      }
-      if (webSocket) {
-        webSocket.send(JSON.stringify({error: "海龟汤已经进行中"}));
-      }
+      this.sendErrorToSession(session, "海龟汤已经进行中");
       return;
     }
 
@@ -594,7 +736,7 @@ export class ChatRoom {
     }, 30000);
   }
 
-  handleTurtleSoupConfirmation(session, data) {
+  async handleTurtleSoupConfirmation(session, data) {
     console.log(`[TurtleSoup] Confirmation from ${data.user} for ${data.initiator}: ${data.confirmed}`);
     
     if (!this.pendingConfirmations.has(data.initiator)) {
@@ -648,20 +790,29 @@ export class ChatRoom {
     if (confirmedUsers.size === requiredConfirmations.length) {
       // All users confirmed, start the turtle soup
       console.log(`[TurtleSoup] All users confirmed, starting turtle soup`);
-      this.startTurtleSoup(data.initiator, originalParticipants);
+      await this.startTurtleSoup(data.initiator, originalParticipants);
       this.pendingConfirmations.delete(data.initiator);
     } else {
       console.log(`[TurtleSoup] Still waiting for confirmations: ${confirmedUsers.size}/${requiredConfirmations.length}`);
     }
   }
 
-  startTurtleSoup(initiator, participants) {
+  async startTurtleSoup(initiator, participants) {
     console.log(`[TurtleSoup] Starting turtle soup with initiator: ${initiator}, participants:`, participants);
     
     this.turtleSoupActive = true;
     this.turtleSoupInitiator = initiator;
     this.turtleSoupParticipants = participants;
     this.currentTurnIndex = 0;
+    
+    // Initialize user scores
+    this.userScores.clear();
+    participants.forEach(participant => {
+      this.userScores.set(participant, { totalScore: 0, questionCount: 0 });
+    });
+
+    // Save game state
+    await this.saveGameState();
 
     // Broadcast start message
     this.broadcast({
@@ -688,25 +839,380 @@ export class ChatRoom {
     });
   }
 
-  handleTurtleSoupEnd(session, data) {
+  async handleTurtleSoupEnd(session, data) {
     if (!this.turtleSoupActive || session.name !== this.turtleSoupInitiator) {
       return; // Only initiator can end
     }
 
-    this.endTurtleSoup();
+    await this.endTurtleSoup();
   }
 
-  endTurtleSoup() {
+  async endTurtleSoup() {
     this.turtleSoupActive = false;
     this.turtleSoupParticipants = [];
     this.turtleSoupInitiator = null;
     this.currentTurnIndex = 0;
+    this.userScores.clear(); // Clear scores when game ends
+
+    // Also end AI host mode if active
+    if (this.aiHostActive) {
+      await this.endAIHostMode();
+    }
+
+    // Save game state
+    await this.saveGameState();
 
     // Broadcast end message
     this.broadcast({
       turtleSoupEnd: true
     });
   }
+
+  // Handle puzzle selection in turtle soup
+  async handleTurtleSoupPuzzleSelected(session, data) {
+    console.log(`[TurtleSoup-AI] Puzzle selected by ${data.initiator}: ${data.puzzleId}`);
+    
+    if (!this.turtleSoupActive || session.name !== this.turtleSoupInitiator) {
+      this.sendErrorToSession(session, "只有海龟汤发起人可以选择题目");
+      return;
+    }
+
+    // Load the selected puzzle
+    const puzzle = this.loadPuzzle(data.puzzleId);
+    if (!puzzle) {
+      this.sendErrorToSession(session, "题目加载失败");
+      return;
+    }
+
+    try {
+      // Initialize AI Host if not already done
+      if (!this.aiHost) {
+        this.aiHost = createAIHost(this.env);
+      }
+
+      // Start AI host game with the selected puzzle
+      const gameResult = await this.aiHost.startGame(data.puzzleId, {});
+      
+      if (!gameResult.success) {
+        const errorMessage = gameResult.error?.message || gameResult.error || '启动失败';
+        this.sendErrorToSession(session, `启动AI主持模式失败: ${errorMessage}`);
+        return;
+      }
+
+      // Start AI host mode within turtle soup
+      this.aiHostActive = true;
+      this.aiHostInitiator = data.initiator;
+      this.aiHostParticipants = this.turtleSoupParticipants;
+      this.currentPuzzle = puzzle;
+
+      // Save game state
+      await this.saveGameState();
+
+      // Broadcast puzzle start
+      this.broadcast({
+        turtleSoupPuzzleStart: true,
+        initiator: data.initiator,
+        participants: this.turtleSoupParticipants,
+        puzzle: puzzle,
+        startMessage: `🧩 ${puzzle.title} - ${puzzle.surface}`
+      });
+
+      console.log(`[TurtleSoup-AI] AI-hosted turtle soup started with puzzle: ${puzzle.title}`);
+      
+    } catch (error) {
+      console.error(`[TurtleSoup-AI] Failed to start AI host:`, error);
+      this.sendErrorToSession(session, "启动AI主持模式时发生错误");
+    }
+  }
+
+  // Handle AI message in turtle soup mode
+  async handleTurtleSoupAIMessage(session, messageData) {
+    const currentPlayer = this.turtleSoupParticipants[this.currentTurnIndex];
+    
+    if (currentPlayer !== session.name) {
+      console.log(`[TurtleSoup-AI] Wrong user's turn: ${session.name} vs ${currentPlayer}`);
+      return;
+    }
+
+    console.log(`[TurtleSoup-AI] Processing AI question from ${session.name}: "${messageData.message}"`);
+    
+    // Process the AI question and get response
+    await this.processAIHostQuestion(session.name, messageData.message);
+    
+    // Advance turn
+    this.currentTurnIndex = (this.currentTurnIndex + 1) % this.turtleSoupParticipants.length;
+    
+    // Broadcast turn change after a delay
+    setTimeout(async () => {
+      // Save game state when turn changes
+      await this.saveGameState();
+      
+      this.broadcast({
+        turtleSoupTurnChange: true,
+        turnIndex: this.currentTurnIndex,
+        nextPlayer: this.turtleSoupParticipants[this.currentTurnIndex]
+      });
+    }, 2000); // Give time for AI response to be processed
+  }
+
+  // Load puzzle by ID
+  loadPuzzle(puzzleId) {
+    return this.puzzleManager.getPuzzleById(puzzleId);
+  }
+
+  /**
+   * Generate simple AI response for turtle soup questions
+   * @param {string} question - User's question
+   * @returns {Object} AI response with score and formatted message
+   */
+  generateAIResponse(question) {
+    const responses = ['是', '不是', '是也不是', '没有关系'];
+    const response = responses[Math.floor(Math.random() * responses.length)];
+    
+    // Simple scoring logic based on question characteristics
+    let score = 5; // Base score
+    let quality = '一般';
+    
+    const questionLower = question.toLowerCase();
+    
+    // Better questions get higher scores
+    if (questionLower.includes('为什么') || questionLower.includes('怎么') || questionLower.includes('如何')) {
+      score += 2;
+      quality = '很好';
+    } else if (questionLower.includes('是否') || questionLower.includes('是不是') || question.endsWith('吗？') || question.endsWith('吗')) {
+      score += 1;
+      quality = '不错';
+    }
+    
+    // Penalize very short questions
+    if (question.length < 5) {
+      score -= 1;
+      quality = '可以更详细';
+    }
+    
+    // Ensure score is within range
+    score = Math.max(1, Math.min(10, score));
+    
+    const formatted = `${response}（问题质量：${quality}，得分：${score}分）`;
+    
+    console.log(`[TurtleSoup AI] Question: "${question}" -> Response: "${response}", Score: ${score}`);
+    
+    return {
+      answer: response,
+      score: score,
+      quality: quality,
+      formatted: formatted
+    };
+  }
+
+  // AI Host related methods
+  
+  /**
+   * Handle AI Host request
+   * @param {Object} session - User session
+   * @param {Object} data - Request data
+   */
+  async handleAIHostRequest(session, data) {
+    console.log(`[AI Host] Request from ${session.name}`);
+    
+    // Check if AI host is already active
+    if (this.aiHostActive) {
+      this.sendErrorToSession(session, "AI主持模式已经在进行中");
+      return;
+    }
+    
+    // Check if turtle soup is active
+    if (this.turtleSoupActive) {
+      this.sendErrorToSession(session, "海龟汤模式正在进行中，请先结束");
+      return;
+    }
+    
+    try {
+      // Initialize AI Host if not already done
+      if (!this.aiHost) {
+        this.aiHost = createAIHost(this.env);
+      }
+      
+      // Start AI host game
+      const gameResult = await this.aiHost.startGame(data.puzzleId, data.filters || {});
+      
+      if (!gameResult.success) {
+        const errorMessage = gameResult.error?.message || gameResult.error || '启动失败';
+        this.sendErrorToSession(session, `启动AI主持模式失败: ${errorMessage}`);
+        return;
+      }
+      
+      // Extract game data from the new format
+      const gameData = gameResult.data;
+      
+      // Set AI host state
+      this.aiHostActive = true;
+      this.aiHostInitiator = session.name;
+      
+      // Get all online users as participants
+      this.aiHostParticipants = [];
+      this.sessions.forEach((s) => {
+        if (s.name) {
+          this.aiHostParticipants.push(s.name);
+        }
+      });
+      
+      // Broadcast AI host start
+      this.broadcast({
+        aiHostStart: true,
+        initiator: session.name,
+        participants: this.aiHostParticipants,
+        puzzle: gameData.puzzle,
+        startMessage: gameData.startMessage
+      });
+      
+      console.log(`[AI Host] Started successfully with puzzle: ${gameData.puzzle.title}`);
+      
+    } catch (error) {
+      console.error(`[AI Host] Failed to start:`, error);
+      this.sendErrorToSession(session, "启动AI主持模式时发生错误");
+    }
+  }
+  
+  /**
+   * Handle AI Host end request
+   * @param {Object} session - User session
+   * @param {Object} data - Request data
+   */
+  async handleAIHostEnd(session, data) {
+    console.log(`[AI Host] End request from ${session.name}`);
+    
+    if (!this.aiHostActive) {
+      this.sendErrorToSession(session, "当前不在AI主持模式");
+      return;
+    }
+    
+    if (session.name !== this.aiHostInitiator) {
+      this.sendErrorToSession(session, "只有发起人可以结束游戏");
+      return;
+    }
+    
+    await this.endAIHostMode();
+  }
+  
+  /**
+   * Process AI Host question
+   * @param {string} userId - User ID
+   * @param {string} question - User question
+   */
+  async processAIHostQuestion(userId, question) {
+    try {
+      console.log(`[AI Host] Processing question from ${userId}: "${question}"`);
+      
+      if (!this.aiHost) {
+        throw new Error('AI Host not initialized');
+      }
+      
+      // Process question through AI host
+      const result = await this.aiHost.processQuestion(question, userId);
+      
+      if (!result.success) {
+        // Handle different error formats
+        const errorMessage = result.error?.message || result.error || '处理问题时发生错误';
+        this.broadcast({
+          error: errorMessage
+        });
+        return;
+      }
+      
+      // Extract response data from the new format
+      const responseData = result.data;
+      const response = responseData.response;
+      
+      // Check if game is solved
+      const isSolved = this.aiHost.checkIfSolved(response);
+      
+      if (isSolved) {
+        // Game solved - end with solution
+        const endResult = this.aiHost.endGame(true);
+        
+        if (endResult.success) {
+          this.broadcast({
+            aiGameSolved: true,
+            endMessage: endResult.data.endMessage,
+            statistics: endResult.data.statistics
+          });
+        } else {
+          // Handle endGame error
+          console.error('[AI Host] Failed to end game:', endResult.error);
+        }
+        
+        // End AI host mode
+        await this.endAIHostMode();
+      } else {
+        // Regular AI response
+        this.broadcast({
+          aiResponse: true,
+          questioner: userId,
+          question: question,
+          formattedMessage: responseData.formattedMessage,
+          gameState: responseData.gameState
+        });
+      }
+      
+    } catch (error) {
+      console.error(`[AI Host] Failed to process question:`, error);
+      this.broadcast({
+        error: "处理问题时发生内部错误，请重试"
+      });
+    }
+  }
+  
+  /**
+   * End AI Host mode
+   */
+  async endAIHostMode() {
+    console.log(`[AI Host] Ending AI host mode`);
+    
+    let statistics = null;
+    if (this.aiHost) {
+      const gameState = this.aiHost.getGameState();
+      if (gameState) {
+        statistics = {
+          totalQuestions: gameState.questionCount,
+          totalScore: gameState.totalScore,
+          averageScore: gameState.averageScore,
+          hintsUsed: gameState.hintsGiven
+        };
+      }
+      this.aiHost.cleanup();
+    }
+    
+    this.aiHostActive = false;
+    this.aiHostInitiator = null;
+    this.aiHostParticipants = [];
+    
+    // Save game state
+    await this.saveGameState();
+    
+    // Broadcast end message
+    this.broadcast({
+      aiHostEnd: true,
+      statistics: statistics
+    });
+  }
+  
+  /**
+   * Send error message to specific session
+   * @param {Object} session - User session
+   * @param {string} message - Error message
+   */
+  sendErrorToSession(session, message) {
+    // Find the websocket for this session
+    for (let [webSocket, sess] of this.sessions.entries()) {
+      if (sess === session) {
+        this.sendError(webSocket, message);
+        break;
+      }
+    }
+  }
+
+
 }
 
 // =======================================================================================

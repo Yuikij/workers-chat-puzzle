@@ -14,6 +14,20 @@ type = "Data"
 globs = ["**/*.html"]
 fallthrough = false
 
+# Default environment variables for development
+[vars]
+LLM_API_URL = "https://llmproxy.yuisama.top"
+LLM_API_KEY = "7jWob4zQj8Od5upyD34GMb1o"
+LLM_MODEL = "gpt-4"
+LLM_MAX_TOKENS = "1000"
+LLM_TEMPERATURE = "0.7"
+LLM_TIMEOUT = "30000"
+LLM_MAX_RETRIES = "3"
+GAME_MAX_QUESTIONS = "50"
+RESPONSE_ENABLE_EMOJI = "true"
+
+
+
 # Indicate that you want the ChatRoom and RateLimiter classes to be callable as Durable Objects.
 [[migrations]]
 tag = "v1"                                       # Should be unique for each entry
